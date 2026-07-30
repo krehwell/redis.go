@@ -16,13 +16,16 @@ func handleCommand(args []string) string {
 			return encodeBulkString(args[1])
 		}
 		return "+PONG\r\n"
+	case "ECHO":
+		return encodeBulkString(args[1:]...)
 	}
 
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
 }
 
-func encodeBulkString(s string) string {
-	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
+func encodeBulkString(s ...string) string {
+	ss := strings.Join(s, " ")
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(ss), ss)
 }
 
 func main() {
