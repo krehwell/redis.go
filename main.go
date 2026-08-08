@@ -18,14 +18,33 @@ func handleCommand(args []string) string {
 		return "+PONG\r\n"
 	case "ECHO":
 		return encodeBulkString(args[1:]...)
+	case "COMMAND":
+		if args[1] == "DOCS" {
+			return encodeSimpleString("OK")
+		}
 	}
 
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
 }
 
 func encodeBulkString(s ...string) string {
+	if s == nil {
+		return "$-1\r\n"
+	}
 	ss := strings.Join(s, " ")
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(ss), ss)
+}
+
+func encodeSimpleString(s string) string {
+	return fmt.Sprintf("+%s\r\n", s)
+}
+
+func encodeError(msg string) string {
+	return fmt.Sprintf("-%s\r\n", msg)
+}
+
+func encodeInteger(i int) string {
+	return fmt.Sprintf(":%d\r\n", i)
 }
 
 func main() {
