@@ -124,3 +124,49 @@ func main() {
 		fmt.Print(handleCommand(parseArgs(line)))
 	}
 }
+
+// func main() {
+// 	r := bufio.NewReader(os.Stdin)
+// 	w := bufio.NewWriter(os.Stdout)
+// 	defer w.Flush()
+// 	for {
+// 		args, err := parseRequest(r)
+// 		if err != nil {
+// 			return
+// 		}
+// 		w.WriteString(handleCommand(args))
+// 		w.Flush()
+// 	}
+// }
+//
+// func readCount(r *bufio.Reader, prefix byte) (int, error) {
+// 	line, err := r.ReadString('\n')
+// 	if err != nil {
+// 		return 0, err
+// 	}
+// 	if len(line) == 0 || line[0] != prefix {
+// 		return 0, fmt.Errorf("expected %q, got %q", prefix, line)
+// 	}
+// 	return strconv.Atoi(strings.TrimRight(line[1:], "\r\n"))
+// }
+//
+// func parseRequest(r *bufio.Reader) ([]string, error) {
+// 	n, err := readCount(r, '*')
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	args := make([]string, n)
+// 	for i := range args {
+// 		length, err := readCount(r, '$')
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		buf := make([]byte, length+2)
+// 		if _, err := io.ReadFull(r, buf); err != nil {
+// 			return nil, err
+// 		}
+// 		args[i] = string(buf[:length])
+// 	}
+// 	return args, nil
+// }
