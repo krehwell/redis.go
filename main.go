@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Arity struct {
@@ -24,9 +26,15 @@ var ARITIES = map[string]Arity{
 	"DECR":    {1, 1},
 	"INCRBY":  {2, 2},
 	"DECRBY":  {2, 2},
+	"EXPIRE":  {2, 2},
+	"TTL":     {1, 1},
+	"PERSIST": {1, 1},
+	"WAIT":    {2, 2},
 }
 
 var storage = map[string]string{}
+var expires = map[string]time.Time{}
+var clock int64 = 0 // simulated clock in milliseconds
 
 func checkArity(cmd string, args ...string) string {
 	arity, ok := ARITIES[cmd]
@@ -42,43 +50,53 @@ func checkArity(cmd string, args ...string) string {
 	return ""
 }
 
-func handleCommand(args []string) string {
-	cmd := strings.ToUpper(args[0])
+func handleCommand(cmd string, args []string) string {
+	cmd = strings.ToUpper(cmd)
 
-	err := checkArity(cmd, args[1:]...)
+	err := checkArity(cmd, args[0:]...)
 	if err != "" {
 		return err
 	}
 
 	switch cmd {
 	case "PING":
-		if len(args) > 1 {
-			return encodeBulkString(args[1])
+		if len(args) > 0 {
+			return encodeBulkString(args[0])
 		}
 		return encodeSimpleString("PONG")
 	case "ECHO":
-		return encodeBulkString(args[1])
+		return encodeBulkString(args[0])
 	case "COMMAND":
-		if args[1] == "DOCS" {
+		if args[0] == "DOCS" {
 			return encodeSimpleString("OK")
 		}
 	case "SET":
-		return cmdSet(args[1], args[2], args[3:]...)
+		return cmdSet(args[0], args[1], args[2:]...)
 	case "GET":
-		if v, found := storage[args[1]]; found {
+		if v, found := storage[args[0]]; found {
 			return encodeBulkString(v)
 		}
 		return NIL
 	case "INCR":
-		return cmdAccumulate(1, args[1], "1")
+		return cmdAccumulate(1, args[0], "1")
 	case "DECR":
-		return cmdAccumulate(-1, args[1], "1")
+		return cmdAccumulate(-1, args[0], "1")
 	case "INCRBY":
-		return cmdAccumulate(1, args[1], args[2])
+		return cmdAccumulate(1, args[0], args[1])
 	case "DECRBY":
-		return cmdAccumulate(-1, args[1], args[2])
+		return cmdAccumulate(-1, args[0], args[1])
 	case "DBSIZE":
 		return encodeInteger(len(storage))
+	case "EXPIRE":
+		return cmdExpire(args...)
+	case "TTL":
+		return cmdTtl(args...)
+	case "PERSIST":
+		return cmdPersist(args...)
+	case "WAIT":
+		ms, _ := strconv.ParseInt(args[0], 10, 64)
+		clock += ms
+		return encodeSimpleString("OK")
 	}
 
 	return encodeError("ERR unknown command")
@@ -104,6 +122,52 @@ func cmdAccumulate(sign int, key, amount string) string {
 	storage[key] = strconv.Itoa(sum)
 
 	return encodeInteger(sum)
+}
+
+func cmdPersist(args ...string) string {
+	key := args[0]
+	_, found := expires[key]
+	if found {
+		delete(expires, key)
+		return encodeInteger(1)
+	}
+	return encodeInteger(0)
+}
+
+func cmdTtl(args ...string) string {
+	key := args[0]
+
+	if _, found := storage[key]; !found {
+		return encodeInteger(-2)
+	}
+
+	exp, found := expires[key]
+	if !found {
+		return encodeInteger(-1)
+	}
+
+	hasExp := time.Now().After(exp)
+	if hasExp {
+		return encodeInteger(-1)
+	}
+
+	remaining := time.Until(exp)
+	return encodeInteger(int(math.Ceil(remaining.Seconds())))
+}
+
+func cmdExpire(args ...string) string {
+	key := args[0]
+	seconds, err := strconv.Atoi(args[1])
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+
+	_, found := storage[key]
+	if !found {
+		return encodeInteger(0)
+	}
+	expires[key] = time.Now().Add(time.Duration(seconds) * time.Second)
+	return encodeInteger(1)
 }
 
 func cmdSet(key, value string, opts ...string) string {
@@ -181,7 +245,8 @@ func main() {
 		if line == "" {
 			continue
 		}
-		fmt.Print(handleCommand(parseArgs(line)))
+		args := parseArgs(line)
+		fmt.Print(handleCommand(args[0], args[1:]))
 	}
 }
 
