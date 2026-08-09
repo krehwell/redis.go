@@ -16,7 +16,7 @@ var ARITIES = map[string]Arity{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
 	"COMMAND": {0, 1},
-	"SET":     {2, 2},
+	"SET":     {2, 4},
 	"GET":     {1, 1},
 	"DBSIZE":  {0, 0},
 }
@@ -58,22 +58,47 @@ func handleCommand(args []string) string {
 			return encodeSimpleString("OK")
 		}
 	case "SET":
-		storage[args[1]] = args[2]
-		return encodeSimpleString("OK")
+		return cmdSet(args[1], args[2], args[3:]...)
 	case "GET":
 		if v, ok := storage[args[1]]; ok {
 			return encodeBulkString(v)
 		}
 		return encodeBulkString()
 	case "DBSIZE":
-		return encodeInteger(getDbSize())
+		return cmdDbSize()
 	}
 
-	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
+	return encodeError("ERR unknown command")
 }
 
-func getDbSize() int {
-	return len(storage)
+func cmdSet(key, value string, opts ...string) string {
+	if len(opts) > 1 {
+		return encodeError("ERR syntax error")
+	}
+
+	if len(opts) == 1 {
+		_, exists := storage[key]
+		switch strings.ToUpper(opts[0]) {
+		case "NX":
+			if exists {
+				return encodeBulkString()
+			}
+		case "XX":
+			if !exists {
+				return encodeBulkString()
+			}
+		default:
+			return encodeError("ERR syntax error")
+		}
+	}
+
+	storage[key] = value
+	return encodeSimpleString("OK")
+}
+
+func cmdDbSize() string {
+	l := len(storage)
+	return encodeInteger(l)
 }
 
 func encodeBulkString(s ...string) string {
