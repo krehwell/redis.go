@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -16,7 +18,11 @@ var ARITIES = map[string]Arity{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
 	"COMMAND": {0, 1},
+	"SET":     {2, 2},
+	"GET":     {1, 1},
 }
+
+var storage = map[string]string{}
 
 func checkArity(cmd string, args ...string) string {
 	arity, ok := ARITIES[cmd]
@@ -52,6 +58,14 @@ func handleCommand(args []string) string {
 		if args[1] == "DOCS" {
 			return encodeSimpleString("OK")
 		}
+	case "SET":
+		storage[args[1]] = args[2]
+		return encodeSimpleString("OK")
+	case "GET":
+		if v, ok := storage[args[1]]; ok {
+			return encodeBulkString(v)
+		}
+		return encodeBulkString()
 	}
 
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
@@ -78,39 +92,47 @@ func encodeInteger(i int) string {
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	r := bufio.NewReader(os.Stdin)
+	w := bufio.NewWriter(os.Stdout)
+	defer w.Flush()
+	for {
+		args, err := parseRequest(r)
+		if err != nil {
+			return
 		}
-		args := parseArgs(line)
-		response := handleCommand(args)
-		fmt.Print(response)
+		w.WriteString(handleCommand(args))
+		w.Flush()
 	}
 }
 
-func parseArgs(line string) []string {
-	var args []string
-	var current strings.Builder
-	inQuotes := false
-	for _, ch := range line {
-		switch {
-		case ch == '"' && !inQuotes:
-			inQuotes = true
-		case ch == '"' && inQuotes:
-			inQuotes = false
-		case ch == ' ' && !inQuotes:
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(ch)
+func readCount(r *bufio.Reader, prefix byte) (int, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+	if len(line) == 0 || line[0] != prefix {
+		return 0, fmt.Errorf("expected %q, got %q", prefix, line)
+	}
+	return strconv.Atoi(strings.TrimRight(line[1:], "\r\n"))
+}
+
+func parseRequest(r *bufio.Reader) ([]string, error) {
+	n, err := readCount(r, '*')
+	if err != nil {
+		return nil, err
+	}
+
+	args := make([]string, n)
+	for i := range args {
+		length, err := readCount(r, '$')
+		if err != nil {
+			return nil, err
 		}
+		buf := make([]byte, length+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		args[i] = string(buf[:length])
 	}
-	if current.Len() > 0 {
-		args = append(args, current.String())
-	}
-	return args
+	return args, nil
 }
