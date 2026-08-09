@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -15,10 +16,14 @@ type Arity struct {
 var ARITIES = map[string]Arity{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
-	"COMMAND": {0, 1},
+	"COMMAND": {1, 1},
 	"SET":     {2, 4},
 	"GET":     {1, 1},
 	"DBSIZE":  {0, 0},
+	"INCR":    {1, 1},
+	"DECR":    {1, 1},
+	"INCRBY":  {2, 2},
+	"DECRBY":  {2, 2},
 }
 
 var storage = map[string]string{}
@@ -47,12 +52,12 @@ func handleCommand(args []string) string {
 
 	switch cmd {
 	case "PING":
-		if a := len(args); a > 1 {
+		if len(args) > 1 {
 			return encodeBulkString(args[1])
 		}
-		return "+PONG\r\n"
+		return encodeSimpleString("PONG")
 	case "ECHO":
-		return encodeBulkString(args[1:]...)
+		return encodeBulkString(args[1])
 	case "COMMAND":
 		if args[1] == "DOCS" {
 			return encodeSimpleString("OK")
@@ -60,15 +65,45 @@ func handleCommand(args []string) string {
 	case "SET":
 		return cmdSet(args[1], args[2], args[3:]...)
 	case "GET":
-		if v, ok := storage[args[1]]; ok {
+		if v, found := storage[args[1]]; found {
 			return encodeBulkString(v)
 		}
-		return encodeBulkString()
+		return NIL
+	case "INCR":
+		return cmdAccumulate(1, args[1], "1")
+	case "DECR":
+		return cmdAccumulate(-1, args[1], "1")
+	case "INCRBY":
+		return cmdAccumulate(1, args[1], args[2])
+	case "DECRBY":
+		return cmdAccumulate(-1, args[1], args[2])
 	case "DBSIZE":
-		return cmdDbSize()
+		return encodeInteger(len(storage))
 	}
 
 	return encodeError("ERR unknown command")
+}
+
+func cmdAccumulate(sign int, key, amount string) string {
+	v, found := storage[key]
+	if !found {
+		v = "0"
+	}
+
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+
+	add, err := strconv.Atoi(amount)
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+
+	sum := n + sign*add
+	storage[key] = strconv.Itoa(sum)
+
+	return encodeInteger(sum)
 }
 
 func cmdSet(key, value string, opts ...string) string {
@@ -77,15 +112,15 @@ func cmdSet(key, value string, opts ...string) string {
 	}
 
 	if len(opts) == 1 {
-		_, exists := storage[key]
+		_, found := storage[key]
 		switch strings.ToUpper(opts[0]) {
 		case "NX":
-			if exists {
-				return encodeBulkString()
+			if found {
+				return NIL
 			}
 		case "XX":
-			if !exists {
-				return encodeBulkString()
+			if !found {
+				return NIL
 			}
 		default:
 			return encodeError("ERR syntax error")
@@ -96,17 +131,10 @@ func cmdSet(key, value string, opts ...string) string {
 	return encodeSimpleString("OK")
 }
 
-func cmdDbSize() string {
-	l := len(storage)
-	return encodeInteger(l)
-}
+const NIL = "$-1\r\n"
 
-func encodeBulkString(s ...string) string {
-	if s == nil {
-		return "$-1\r\n"
-	}
-	ss := strings.Join(s, " ")
-	return fmt.Sprintf("$%d\r\n%s\r\n", len(ss), ss)
+func encodeBulkString(s string) string {
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 }
 
 func encodeSimpleString(s string) string {
