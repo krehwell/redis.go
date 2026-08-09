@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -91,48 +89,38 @@ func encodeInteger(i int) string {
 	return fmt.Sprintf(":%d\r\n", i)
 }
 
+func parseArgs(line string) []string {
+	var args []string
+	var cur strings.Builder
+	inQ := false
+	for _, ch := range line {
+		switch {
+		case ch == '"' && !inQ:
+			inQ = true
+		case ch == '"' && inQ:
+			inQ = false
+		case ch == ' ' && !inQ:
+			if cur.Len() > 0 {
+				args = append(args, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(ch)
+		}
+	}
+	if cur.Len() > 0 {
+		args = append(args, cur.String())
+	}
+	return args
+}
+
 func main() {
-	r := bufio.NewReader(os.Stdin)
-	w := bufio.NewWriter(os.Stdout)
-	defer w.Flush()
-	for {
-		args, err := parseRequest(r)
-		if err != nil {
-			return
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
 		}
-		w.WriteString(handleCommand(args))
-		w.Flush()
+		fmt.Print(handleCommand(parseArgs(line)))
 	}
-}
-
-func readCount(r *bufio.Reader, prefix byte) (int, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return 0, err
-	}
-	if len(line) == 0 || line[0] != prefix {
-		return 0, fmt.Errorf("expected %q, got %q", prefix, line)
-	}
-	return strconv.Atoi(strings.TrimRight(line[1:], "\r\n"))
-}
-
-func parseRequest(r *bufio.Reader) ([]string, error) {
-	n, err := readCount(r, '*')
-	if err != nil {
-		return nil, err
-	}
-
-	args := make([]string, n)
-	for i := range args {
-		length, err := readCount(r, '$')
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, length+2)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
-		}
-		args[i] = string(buf[:length])
-	}
-	return args, nil
 }
