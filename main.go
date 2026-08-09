@@ -18,6 +18,7 @@ var ARITIES = map[string]Arity{
 	"COMMAND": {0, 1},
 	"SET":     {2, 2},
 	"GET":     {1, 1},
+	"DBSIZE":  {0, 0},
 }
 
 var storage = map[string]string{}
@@ -64,9 +65,15 @@ func handleCommand(args []string) string {
 			return encodeBulkString(v)
 		}
 		return encodeBulkString()
+	case "DBSIZE":
+		return encodeInteger(getDbSize())
 	}
 
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
+}
+
+func getDbSize() int {
+	return len(storage)
 }
 
 func encodeBulkString(s ...string) string {
