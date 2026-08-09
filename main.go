@@ -7,8 +7,38 @@ import (
 	"strings"
 )
 
+type Arity struct {
+	min int
+	max int
+}
+
+var ARITIES = map[string]Arity{
+	"PING":    {0, 1},
+	"ECHO":    {1, 1},
+	"COMMAND": {0, 1},
+}
+
+func checkArity(cmd string, args ...string) string {
+	arity, ok := ARITIES[cmd]
+	if !ok {
+		return encodeError(fmt.Sprintf("ERR unknown command '%s'", cmd))
+	}
+
+	lo, hi := arity.min, arity.max
+	if len(args) < lo || len(args) > hi {
+		return encodeError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", cmd))
+	}
+
+	return ""
+}
+
 func handleCommand(args []string) string {
 	cmd := strings.ToUpper(args[0])
+
+	err := checkArity(cmd, args[1:]...)
+	if err != "" {
+		return err
+	}
 
 	switch cmd {
 	case "PING":
