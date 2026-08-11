@@ -19,7 +19,7 @@ var ARITIES = map[string]Arity{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
 	"COMMAND": {1, 1},
-	"SET":     {2, 4},
+	"SET":     {2, 8},
 	"GET":     {1, 1},
 	"DBSIZE":  {0, 0},
 	"INCR":    {1, 1},
@@ -28,13 +28,13 @@ var ARITIES = map[string]Arity{
 	"DECRBY":  {2, 2},
 	"EXPIRE":  {2, 2},
 	"TTL":     {1, 1},
+	"PTTL":    {1, 1},
 	"PERSIST": {1, 1},
 	"WAIT":    {2, 2},
 }
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
-var clock int64 = 0 // simulated clock in milliseconds
 
 func checkArity(cmd string, args ...string) string {
 	arity, ok := ARITIES[cmd]
@@ -76,7 +76,7 @@ func handleCommand(cmd string, args []string) string {
 		if v, found := storage[args[0]]; found {
 			return encodeBulkString(v)
 		}
-		return NIL
+		return encodeNil()
 	case "INCR":
 		return cmdAccumulate(1, args[0], "1")
 	case "DECR":
@@ -91,12 +91,15 @@ func handleCommand(cmd string, args []string) string {
 		return cmdExpire(args...)
 	case "TTL":
 		return cmdTtl(args...)
+	case "PTTL":
+		return cmdPttl(args...)
 	case "PERSIST":
 		return cmdPersist(args...)
 	case "WAIT":
-		ms, _ := strconv.ParseInt(args[0], 10, 64)
-		clock += ms
-		return encodeSimpleString("OK")
+		// ms, _ := strconv.ParseInt(args[0], 10, 64)
+		// clock += ms
+		// return encodeSimpleString("OK")
+		return encodeError("ERR time not implemented")
 	}
 
 	return encodeError("ERR unknown command")
@@ -155,6 +158,23 @@ func cmdTtl(args ...string) string {
 	return encodeInteger(int(math.Ceil(remaining.Seconds())))
 }
 
+func cmdPttl(args ...string) string {
+	key := args[0]
+	_, found := storage[key]
+
+	if !found {
+		return encodeInteger(-2)
+	}
+
+	exp, hasExp := expires[key]
+	if !hasExp {
+		return encodeInteger(-1)
+	}
+
+	remaining := time.Until(exp)
+	return encodeInteger(int(remaining+time.Millisecond-1) / int(time.Millisecond))
+}
+
 func cmdExpire(args ...string) string {
 	key := args[0]
 	seconds, err := strconv.Atoi(args[1])
@@ -171,31 +191,61 @@ func cmdExpire(args ...string) string {
 }
 
 func cmdSet(key, value string, opts ...string) string {
-	if len(opts) > 1 {
-		return encodeError("ERR syntax error")
-	}
+	var ttl time.Duration
+	var hasTtl bool
+	nx, xx := false, false
 
-	if len(opts) == 1 {
-		_, found := storage[key]
-		switch strings.ToUpper(opts[0]) {
+	for i := 0; i < len(opts); i++ {
+		flag := strings.ToUpper(opts[i])
+		switch flag {
 		case "NX":
-			if found {
-				return NIL
-			}
+			nx = true
 		case "XX":
-			if !found {
-				return NIL
+			xx = true
+		case "EX", "PX":
+			if hasTtl || i+1 >= len(opts) {
+				return encodeError("ERR syntax error")
 			}
+			n, err := strconv.Atoi(opts[i+1])
+			if err != nil {
+				return encodeError("ERR value is not an integer or out of range")
+			}
+			if n <= 0 {
+				return encodeError("ERR invalid expire time in 'set' command")
+			}
+			unit := time.Second
+			if flag == "PX" {
+				unit = time.Millisecond
+			}
+			ttl = time.Duration(n) * unit
+			hasTtl = true
+			i++
 		default:
 			return encodeError("ERR syntax error")
 		}
 	}
 
+	if nx && xx {
+		return encodeError("ERR syntax error")
+	}
+
+	_, found := storage[key]
+	if (nx && found) || (xx && !found) {
+		return encodeNil()
+	}
+
 	storage[key] = value
+
+	if hasTtl {
+		expires[key] = time.Now().Add(ttl)
+	} else {
+		delete(expires, key)
+	}
+
 	return encodeSimpleString("OK")
 }
 
-const NIL = "$-1\r\n"
+func encodeNil() string { return "$-1\r\n" }
 
 func encodeBulkString(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
@@ -250,6 +300,7 @@ func main() {
 	}
 }
 
+// var clock int64 = 0 // simulated clock in milliseconds
 // func main() {
 // 	r := bufio.NewReader(os.Stdin)
 // 	w := bufio.NewWriter(os.Stdout)
