@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,12 +33,24 @@ var ARITIES = map[string]Arity{
 	"PERSIST": {1, 1},
 	"WAIT":    {1, 1},
 	"EXISTS":  {1, 1},
+	"LPUSH":   {2, 128},
+	"RPUSH":   {2, 128},
+	"LRANGE":  {3, 3},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
+var lists = map[string][]string{}
+var keyType = map[string]string{}
+
+func isWrongType(key, want string) string {
+	if t, ok := keyType[key]; ok && t != want {
+		return encodeError("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+	return ""
+}
 
 func checkArity(cmd string, args ...string) string {
 	arity, ok := ARITIES[cmd]
@@ -102,6 +115,10 @@ func handleCommand(cmd string, args []string) string {
 			return encodeInteger(1)
 		}
 		return encodeInteger(0)
+	case "LPUSH", "RPUSH":
+		return cmdPush(cmd, args[0], args[1:]...)
+	case "LRANGE":
+		return cmdLRange(args...)
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -130,6 +147,7 @@ func cmdAccumulate(sign int, key, amount string) string {
 
 	sum := n + sign*add
 	storage[key] = strconv.Itoa(sum)
+	keyType[key] = "string"
 
 	return encodeInteger(sum)
 }
@@ -216,6 +234,8 @@ func expiryIfNeeded(key string) bool {
 	if IsExpire(key) {
 		delete(storage, key)
 		delete(expires, key)
+		delete(keyType, key)
+		delete(lists, key)
 		return true
 	}
 	return false
@@ -277,6 +297,7 @@ func cmdSet(key, value string, opts ...string) string {
 	}
 
 	storage[key] = value
+	keyType[key] = "string"
 
 	if hasTtl {
 		expires[key] = now().Add(ttl)
@@ -288,6 +309,76 @@ func cmdSet(key, value string, opts ...string) string {
 }
 
 func encodeNil() string { return "$-1\r\n" }
+
+func cmdLRange(args ...string) string {
+	key := args[0]
+	expiryIfNeeded(key)
+
+	start, err := strconv.Atoi(args[1])
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+	stop, err := strconv.Atoi(args[2])
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+
+	list := lists[key]
+	ln := len(list)
+	if start < 0 {
+		start = ln + start
+	}
+	if stop < 0 {
+		stop = ln + stop
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= ln {
+		stop = ln - 1
+	}
+	if start > stop {
+		return "*0\r\n"
+	}
+
+	sub := list[start : stop+1]
+	r := fmt.Sprintf("*%d\r\n", len(sub))
+	for _, v := range sub {
+		r += encodeBulkString(v)
+	}
+	return r
+}
+
+func cmdPush(sign string, key string, args ...string) string {
+	isLPush := sign == "LPUSH"
+	isRPush := sign == "RPUSH"
+	if !isLPush && !isRPush {
+		return encodeError("ERR syntax error")
+	}
+
+	expiryIfNeeded(key)
+
+	if err := isWrongType(key, "lists"); err != "" {
+		return err
+	}
+
+	list, found := lists[key]
+	if !found {
+		lists[key] = []string{}
+	}
+
+	if isRPush {
+		list = append(list, args...)
+	} else {
+		rev := slices.Clone(args)
+		slices.Reverse(rev)
+		list = append(rev, list...)
+	}
+
+	lists[key] = list
+
+	return encodeInteger(len(list))
+}
 
 func encodeBulkString(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
