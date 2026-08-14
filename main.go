@@ -41,8 +41,70 @@ var clock int64 = 0 // simulated clock in milliseconds
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
-var lists = map[string][]string{}
+var lists = map[string]*List{}
 var keyType = map[string]string{}
+
+type Node struct {
+	val  string
+	next *Node
+	prev *Node
+}
+
+type List struct {
+	head *Node
+	tail *Node
+	n    int
+}
+
+func (l *List) PushLeft(val string) int {
+	node := &Node{val: val, next: l.head}
+	if l.head != nil {
+		l.head.prev = node
+	} else {
+		l.tail = node
+	}
+	l.head = node
+	l.n++
+	return l.n
+}
+
+func (l *List) PushRight(val string) int {
+	node := &Node{val: val, prev: l.tail}
+	if l.tail != nil {
+		l.tail.next = node
+	} else {
+		l.head = node
+	}
+	l.tail = node
+	l.n++
+	return l.n
+}
+
+func (l *List) Values() []string {
+	out := []string{}
+	for i := l.head; i != l.tail; i = i.next {
+		out = append(out, i.val)
+	}
+	return out
+}
+
+func (l *List) Sub(start, stop int) []string {
+	out := []string{}
+
+	var p *Node = l.head
+	for i := 0; i < start && p != nil; i++ {
+		p = p.next
+	}
+
+	for i := start; i <= stop && p != nil; i++ {
+		out = append(out, p.val)
+		p = p.next
+	}
+
+	return out
+}
+
+func (l *List) Len() int { return l.n }
 
 func isWrongType(key, want string) string {
 	if t, ok := keyType[key]; ok && t != want {
@@ -323,7 +385,10 @@ func cmdLRange(args ...string) string {
 	}
 
 	list := lists[key]
-	ln := len(list)
+	if list == nil {
+		return encodeArray(nil)
+	}
+	ln := list.Len()
 	if start < 0 {
 		start = ln + start
 	}
@@ -337,15 +402,10 @@ func cmdLRange(args ...string) string {
 		stop = ln - 1
 	}
 	if start > stop {
-		return "*0\r\n"
+		return encodeArray(nil)
 	}
 
-	sub := list[start : stop+1]
-	r := fmt.Sprintf("*%d\r\n", len(sub))
-	for _, v := range sub {
-		r += encodeBulkString(v)
-	}
-	return r
+	return encodeArray(list.Sub(start, stop))
 }
 
 func cmdPush(sign string, key string, args ...string) string {
@@ -363,23 +423,30 @@ func cmdPush(sign string, key string, args ...string) string {
 
 	list, found := lists[key]
 	if !found {
-		lists[key] = []string{}
+		list = &List{}
+		lists[key] = list
+		keyType[key] = "lists"
 	}
 
-	if isRPush {
-		list = append(list, args...)
-	} else {
-		out := make([]string, 0, len(args)+len(list))
-		for i := len(args) - 1; i >= 0; i-- {
-			out = append(out, args[i])
+	for _, v := range args {
+		if isRPush {
+			list.PushRight(v)
+		} else {
+			list.PushLeft(v)
 		}
-
-		list = append(out, list...)
 	}
 
 	lists[key] = list
 
-	return encodeInteger(len(list))
+	return encodeInteger(list.Len())
+}
+
+func encodeArray(items []string) string {
+	r := fmt.Sprintf("*%d\r\n", len(items))
+	for _, v := range items {
+		r += encodeBulkString(v)
+	}
+	return r
 }
 
 func encodeBulkString(s string) string {
