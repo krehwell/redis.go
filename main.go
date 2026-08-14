@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -370,9 +369,13 @@ func cmdPush(sign string, key string, args ...string) string {
 	if isRPush {
 		list = append(list, args...)
 	} else {
-		rev := slices.Clone(args)
-		slices.Reverse(rev)
-		list = append(rev, list...)
+		result := []string{}
+		for i := range args {
+			result = append(result, args[len(args)-1-i])
+		}
+
+		result = append(result, list...)
+		list = result
 	}
 
 	lists[key] = list
