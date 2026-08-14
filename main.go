@@ -369,13 +369,12 @@ func cmdPush(sign string, key string, args ...string) string {
 	if isRPush {
 		list = append(list, args...)
 	} else {
-		result := []string{}
-		for i := range args {
-			result = append(result, args[len(args)-1-i])
+		out := make([]string, 0, len(args)+len(list))
+		for i := len(args) - 1; i >= 0; i-- {
+			out = append(out, args[i])
 		}
 
-		result = append(result, list...)
-		list = result
+		list = append(out, list...)
 	}
 
 	lists[key] = list
