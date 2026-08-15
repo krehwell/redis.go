@@ -34,7 +34,11 @@ var ARITIES = map[string]Arity{
 	"EXISTS":  {1, 1},
 	"LPUSH":   {2, 128},
 	"RPUSH":   {2, 128},
+	"LPOP":    {1, 1},
+	"RPOP":    {1, 1},
+	"LLEN":    {1, 1},
 	"LRANGE":  {3, 3},
+	"TYPE":    {1, 1},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -78,6 +82,38 @@ func (l *List) PushRight(val string) int {
 	l.tail = node
 	l.n++
 	return l.n
+}
+
+func (l *List) PopLeft() string {
+	curr := l.head
+
+	l.head = curr.next
+	if l.head != nil {
+		l.head.prev = nil
+	} else {
+		l.tail = nil
+	}
+
+	curr.prev = nil
+	curr.next = nil
+
+	l.n--
+	return curr.val
+}
+
+func (l *List) PopRight() string {
+	curr := l.tail
+
+	l.tail = curr.prev
+	if l.tail != nil {
+		l.tail.next = nil
+	} else {
+		l.tail = nil
+	}
+
+	curr.prev = nil
+	curr.next = nil
+	return curr.val
 }
 
 func (l *List) Values() []string {
@@ -178,8 +214,14 @@ func handleCommand(cmd string, args []string) string {
 		return encodeInteger(0)
 	case "LPUSH", "RPUSH":
 		return cmdPush(cmd, args[0], args[1:]...)
+	case "LPOP", "RPOP":
+		return cmdPop(cmd, args[0], args[1:]...)
 	case "LRANGE":
 		return cmdLRange(args...)
+	case "LLEN":
+		return cmdLlen(args[0])
+	case "TYPE":
+		return cmdType(args[0])
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -188,6 +230,14 @@ func handleCommand(cmd string, args []string) string {
 	}
 
 	return encodeError("ERR unknown command")
+}
+
+func cmdType(key string) string {
+	t, found := keyType[key]
+	if found {
+		return encodeSimpleString(t)
+	}
+	return encodeSimpleString("none")
 }
 
 func cmdAccumulate(sign int, key, amount string) string {
@@ -406,6 +456,47 @@ func cmdLRange(args ...string) string {
 	}
 
 	return encodeArray(list.Sub(start, stop))
+}
+
+func cmdLlen(key string) string {
+	l, found := lists[key]
+	if !found {
+		return encodeInteger(0)
+	}
+	return encodeInteger(l.Len())
+}
+
+func cmdPop(sign string, key string, args ...string) string {
+	isLPop := sign == "LPOP"
+	isRPop := sign == "RPOP"
+	if !isLPop && !isRPop {
+		return encodeError("ERR syntax error")
+	}
+
+	expiryIfNeeded(key)
+
+	if err := isWrongType(key, "lists"); err != "" {
+		return err
+	}
+
+	list, found := lists[key]
+	if !found || list.Len() == 0 {
+		return encodeNil()
+	}
+
+	out := ""
+	if isLPop {
+		out = list.PopLeft()
+	} else {
+		out = list.PopRight()
+	}
+
+	if list.Len() == 0 {
+		delete(lists, key)
+		delete(keyType, key)
+	}
+
+	return encodeBulkString(out)
 }
 
 func cmdPush(sign string, key string, args ...string) string {
