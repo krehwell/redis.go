@@ -113,6 +113,7 @@ func (l *List) PopRight() string {
 
 	curr.prev = nil
 	curr.next = nil
+	l.n--
 	return curr.val
 }
 
