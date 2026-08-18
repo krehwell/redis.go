@@ -98,8 +98,9 @@ for dir in tests/${FILTER}*/; do
       pass=$((pass+1)); echo "PASS  $input"
     else
       fail=$((fail+1)); echo "FAIL  $input"
-      echo "  expected: $(head -c 200 "$expected")"
-      echo "  got:      $(printf '%s' "$actual" | head -c 200)"
+      echo -e "expected:\n$(head -c 200 "$expected")"
+      echo -e "==========================================="
+      echo -e "got:\n$(printf '%s' "$actual" | head -c 200)"
     fi
   done
 done

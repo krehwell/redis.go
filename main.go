@@ -39,6 +39,8 @@ var ARITIES = map[string]Arity{
 	"LLEN":    {1, 1},
 	"LRANGE":  {3, 3},
 	"TYPE":    {1, 1},
+	"HSET":    {2, 128},
+	"HGET":    {2, 2},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -47,6 +49,9 @@ var storage = map[string]string{}
 var expires = map[string]time.Time{}
 var lists = map[string]*List{}
 var keyType = map[string]string{}
+
+// { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
+var hashes = make(map[string]map[string]string)
 
 type Node struct {
 	val  string
@@ -223,6 +228,10 @@ func handleCommand(cmd string, args []string) string {
 		return cmdLlen(args[0])
 	case "TYPE":
 		return cmdType(args[0])
+	case "HSET":
+		return cmdHset(args[0], args[1:]...)
+	case "HGET":
+		return cmdHget(args[0], args[1])
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -262,6 +271,47 @@ func cmdAccumulate(sign int, key, amount string) string {
 	keyType[key] = "string"
 
 	return encodeInteger(sum)
+}
+
+func cmdHset(key string, args ...string) string {
+	if len(args)%2 != 0 {
+		return encodeError("ERR params must be in key-value-pair")
+	}
+
+	h, found := hashes[key]
+	if !found {
+		h = make(map[string]string)
+		hashes[key] = h
+	}
+
+	out := 0
+	for i := 0; i < len(args); i += 2 {
+		innerKey, value := args[i], args[i+1]
+		if _, found := h[innerKey]; !found {
+			out++
+		}
+		h[innerKey] = value
+	}
+
+	return encodeInteger(out)
+}
+
+func cmdHget(key, innerKey string) string {
+	if err := isWrongType(key, "hashes"); err != "" {
+		return err
+	}
+
+	h, found := hashes[key]
+	if !found {
+		return encodeNil()
+	}
+
+	v, found := h[innerKey]
+	if !found {
+		return encodeNil()
+	}
+
+	return encodeBulkString(v)
 }
 
 func cmdPersist(args ...string) string {
