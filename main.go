@@ -41,6 +41,10 @@ var ARITIES = map[string]Arity{
 	"TYPE":    {1, 1},
 	"HSET":    {2, 128},
 	"HGET":    {2, 2},
+	"HGETALL": {2, 2},
+	"HEXISTS": {2, 2},
+	"HDEL":    {2, 128},
+	"HLEN":    {1, 1},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -229,9 +233,17 @@ func handleCommand(cmd string, args []string) string {
 	case "TYPE":
 		return cmdType(args[0])
 	case "HSET":
-		return cmdHset(args[0], args[1:]...)
+		return cmdHSet(args[0], args[1:]...)
 	case "HGET":
-		return cmdHget(args[0], args[1])
+		return cmdHGet(args[0], args[1])
+	case "HDEL":
+		return cmdHDel(args[0], args[1:]...)
+	case "HGETALL":
+		return cmdHGetAll(args[0], args[1])
+	case "HEXISTS":
+		return cmdHExists(args[0], args[1])
+	case "HLEN":
+		return cmdHLen(args[0])
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -273,7 +285,54 @@ func cmdAccumulate(sign int, key, amount string) string {
 	return encodeInteger(sum)
 }
 
-func cmdHset(key string, args ...string) string {
+func cmdHDel(key string, innerKeys ...string) string {
+	h, found := hashes[key]
+	if !found {
+		return encodeInteger(0)
+	}
+
+	out := 0
+	for _, innerKey := range innerKeys {
+		_, found := h[innerKey]
+		if !found {
+			continue
+		}
+		delete(h, innerKey)
+		out++
+	}
+
+	if len(h) == 0 {
+		delete(hashes, key)
+	}
+
+	return encodeInteger(out)
+}
+
+func cmdHGetAll(key string, innerKey string) string {
+	out := []string{}
+	field := hashes[key]
+
+	for k, v := range field {
+		out = append(out, k, v)
+	}
+
+	return encodeArray(out)
+}
+
+func cmdHExists(key, innerKey string) string {
+	_, found := hashes[key][innerKey]
+	if found {
+		return encodeInteger(1)
+	}
+	return encodeInteger(0)
+}
+
+func cmdHLen(key string) string {
+	l := len(hashes[key])
+	return encodeInteger(l)
+}
+
+func cmdHSet(key string, args ...string) string {
 	if len(args)%2 != 0 {
 		return encodeError("ERR params must be in key-value-pair")
 	}
@@ -296,7 +355,7 @@ func cmdHset(key string, args ...string) string {
 	return encodeInteger(out)
 }
 
-func cmdHget(key, innerKey string) string {
+func cmdHGet(key, innerKey string) string {
 	if err := isWrongType(key, "hashes"); err != "" {
 		return err
 	}
