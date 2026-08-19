@@ -16,35 +16,39 @@ type Arity struct {
 }
 
 var ARITIES = map[string]Arity{
-	"PING":    {0, 1},
-	"ECHO":    {1, 1},
-	"COMMAND": {1, 1},
-	"SET":     {2, 8},
-	"GET":     {1, 1},
-	"DBSIZE":  {0, 0},
-	"INCR":    {1, 1},
-	"DECR":    {1, 1},
-	"INCRBY":  {2, 2},
-	"DECRBY":  {2, 2},
-	"EXPIRE":  {2, 2},
-	"TTL":     {1, 1},
-	"PTTL":    {1, 1},
-	"PERSIST": {1, 1},
-	"WAIT":    {1, 1},
-	"EXISTS":  {1, 1},
-	"LPUSH":   {2, 128},
-	"RPUSH":   {2, 128},
-	"LPOP":    {1, 1},
-	"RPOP":    {1, 1},
-	"LLEN":    {1, 1},
-	"LRANGE":  {3, 3},
-	"TYPE":    {1, 1},
-	"HSET":    {2, 128},
-	"HGET":    {2, 2},
-	"HGETALL": {2, 2},
-	"HEXISTS": {2, 2},
-	"HDEL":    {2, 128},
-	"HLEN":    {1, 1},
+	"PING":      {0, 1},
+	"ECHO":      {1, 1},
+	"COMMAND":   {1, 1},
+	"SET":       {2, 8},
+	"GET":       {1, 1},
+	"DBSIZE":    {0, 0},
+	"INCR":      {1, 1},
+	"DECR":      {1, 1},
+	"INCRBY":    {2, 2},
+	"DECRBY":    {2, 2},
+	"EXPIRE":    {2, 2},
+	"TTL":       {1, 1},
+	"PTTL":      {1, 1},
+	"PERSIST":   {1, 1},
+	"WAIT":      {1, 1},
+	"EXISTS":    {1, 1},
+	"LPUSH":     {2, 128},
+	"RPUSH":     {2, 128},
+	"LPOP":      {1, 1},
+	"RPOP":      {1, 1},
+	"LLEN":      {1, 1},
+	"LRANGE":    {3, 3},
+	"TYPE":      {1, 1},
+	"HSET":      {2, 128},
+	"HGET":      {2, 2},
+	"HGETALL":   {1, 1},
+	"HEXISTS":   {2, 2},
+	"HDEL":      {2, 128},
+	"HLEN":      {1, 1},
+	"SADD":      {2, 128},
+	"SCARD":     {1, 1},
+	"SISMEMBER": {2, 2},
+	"SREM":      {2, 128},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -53,9 +57,142 @@ var storage = map[string]string{}
 var expires = map[string]time.Time{}
 var lists = map[string]*List{}
 var keyType = map[string]string{}
+var sets = map[string]*Set{}
 
 // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
 var hashes = make(map[string]map[string]string)
+
+type Node struct {
+	val  string
+	next *Node
+	prev *Node
+}
+
+type List struct {
+	head *Node
+	tail *Node
+	n    int
+}
+
+func (l *List) PushLeft(val string) int {
+	node := &Node{val: val, next: l.head}
+	if l.head != nil {
+		l.head.prev = node
+	} else {
+		l.tail = node
+	}
+	l.head = node
+	l.n++
+	return l.n
+}
+
+func (l *List) PushRight(val string) int {
+	node := &Node{val: val, prev: l.tail}
+	if l.tail != nil {
+		l.tail.next = node
+	} else {
+		l.head = node
+	}
+	l.tail = node
+	l.n++
+	return l.n
+}
+
+func (l *List) PopLeft() string {
+	curr := l.head
+
+	l.head = curr.next
+	if l.head != nil {
+		l.head.prev = nil
+	} else {
+		l.tail = nil
+	}
+
+	curr.prev = nil
+	curr.next = nil
+
+	l.n--
+	return curr.val
+}
+
+func (l *List) PopRight() string {
+	curr := l.tail
+
+	l.tail = curr.prev
+	if l.tail != nil {
+		l.tail.next = nil
+	} else {
+		l.tail = nil
+	}
+
+	curr.prev = nil
+	curr.next = nil
+	l.n--
+	return curr.val
+}
+
+func (l *List) Values() []string {
+	out := []string{}
+	for i := l.head; i != l.tail; i = i.next {
+		out = append(out, i.val)
+	}
+	return out
+}
+
+func (l *List) Sub(start, stop int) []string {
+	out := []string{}
+
+	var p *Node = l.head
+	for i := 0; i < start && p != nil; i++ {
+		p = p.next
+	}
+
+	for i := start; i <= stop && p != nil; i++ {
+		out = append(out, p.val)
+		p = p.next
+	}
+
+	return out
+}
+
+func (l *List) Len() int { return l.n }
+
+type Set struct {
+	val map[string]bool
+	n   int
+}
+
+func (s *Set) Add(v string) int {
+	if s.n == 0 {
+		s.val = make(map[string]bool)
+	}
+
+	_, found := s.val[v]
+
+	if found {
+		return 0
+	}
+	s.val[v] = true
+	s.n++
+	return 1
+}
+
+func (s *Set) IsMember(v string) bool {
+	return s.val[v]
+}
+
+func (s *Set) Len() int { return s.n }
+
+func (s *Set) Remove(v string) int {
+	_, found := s.val[v]
+	if !found {
+		return 0
+	}
+
+	delete(s.val, v)
+	s.n--
+	return 1
+}
 
 func isWrongType(key, want string) string {
 	if t, ok := keyType[key]; ok && t != want {
@@ -144,11 +281,19 @@ func handleCommand(cmd string, args []string) string {
 	case "HDEL":
 		return cmdHDel(args[0], args[1:]...)
 	case "HGETALL":
-		return cmdHGetAll(args[0], args[1])
+		return cmdHGetAll(args[0])
 	case "HEXISTS":
 		return cmdHExists(args[0], args[1])
 	case "HLEN":
 		return cmdHLen(args[0])
+	case "SADD":
+		return cmdSAdd(args[0], args[1:]...)
+	case "SISMEMBER":
+		return cmdSIsMember(args[0], args[1])
+	case "SCARD":
+		return cmdSCard(args[0])
+	case "SREM":
+		return cmdSRem(args[0], args[1:]...)
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -190,6 +335,69 @@ func cmdAccumulate(sign int, key, amount string) string {
 	return encodeInteger(sum)
 }
 
+func cmdSRem(key string, args ...string) string {
+	set, found := sets[key]
+	if !found {
+		return encodeInteger(0)
+	}
+
+	out := 0
+	for _, v := range args {
+		out += set.Remove(v)
+	}
+
+	if set.Len() == 0 {
+		delete(sets, key)
+		delete(keyType, key)
+	}
+
+	return encodeInteger(out)
+}
+
+func cmdSCard(key string) string {
+	set, found := sets[key]
+	if !found {
+		return encodeInteger(0)
+	}
+
+	return encodeInteger(set.Len())
+}
+
+func cmdSIsMember(key, member string) string {
+	set, found := sets[key]
+	if !found {
+		return encodeInteger(0)
+	}
+
+	if out := set.IsMember(member); out == true {
+		return encodeInteger(1)
+	} else {
+		return encodeInteger(0)
+	}
+
+}
+
+func cmdSAdd(key string, args ...string) string {
+	set, found := sets[key]
+
+	if err := isWrongType(key, "sets"); err != "" {
+		return err
+	}
+
+	if !found {
+		set = &Set{}
+		sets[key] = set
+		keyType[key] = "sets"
+	}
+
+	out := 0
+	for _, v := range args {
+		out += set.Add(v)
+	}
+
+	return encodeInteger(out)
+}
+
 func cmdHDel(key string, innerKeys ...string) string {
 	h, found := hashes[key]
 	if !found {
@@ -213,7 +421,7 @@ func cmdHDel(key string, innerKeys ...string) string {
 	return encodeInteger(out)
 }
 
-func cmdHGetAll(key string, innerKey string) string {
+func cmdHGetAll(key string) string {
 	out := []string{}
 	field := hashes[key]
 
