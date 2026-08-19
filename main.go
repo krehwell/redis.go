@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,11 @@ var ARITIES = map[string]Arity{
 	"SCARD":     {1, 1},
 	"SISMEMBER": {2, 2},
 	"SREM":      {2, 128},
+	"ZADD":      {3, 128},
+	"ZRANGE":    {3, 4},
+	"ZSCORE":    {2, 2},
+	"ZCARD":     {1, 1},
+	"ZRANK":     {2, 2},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -58,6 +64,7 @@ var expires = map[string]time.Time{}
 var lists = map[string]*List{}
 var keyType = map[string]string{}
 var sets = map[string]*Set{}
+var zsets = map[string]*ZSet{}
 
 // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
 var hashes = make(map[string]map[string]string)
@@ -157,6 +164,48 @@ func (l *List) Sub(start, stop int) []string {
 
 func (l *List) Len() int { return l.n }
 
+type ZSet struct {
+	scores map[string]float64
+	n      int
+}
+
+func (z *ZSet) Add(s float64, v string) int {
+	_, found := z.scores[v]
+
+	if z.n == 0 {
+		z.scores = make(map[string]float64)
+	}
+
+	if found {
+		return 0
+	}
+	z.scores[v] = s
+	z.n++
+	return 1
+}
+
+func (z *ZSet) GetSorted() []string {
+	members := make([]string, 0, len(z.scores))
+
+	for m := range z.scores {
+		members = append(members, m)
+	}
+
+	sort.Slice(members, func(i, j int) bool {
+		si, sj := z.scores[members[i]], z.scores[members[j]]
+		if si != sj {
+			return si < sj
+		}
+
+		return members[i] < members[j]
+	})
+	return members
+}
+
+func (z *ZSet) Len() int {
+	return z.n
+}
+
 type Set struct {
 	val map[string]bool
 	n   int
@@ -192,27 +241,6 @@ func (s *Set) Remove(v string) int {
 	delete(s.val, v)
 	s.n--
 	return 1
-}
-
-func isWrongType(key, want string) string {
-	if t, ok := keyType[key]; ok && t != want {
-		return encodeError("WRONGTYPE Operation against a key holding the wrong kind of value")
-	}
-	return ""
-}
-
-func checkArity(cmd string, args ...string) string {
-	arity, ok := ARITIES[cmd]
-	if !ok {
-		return encodeError(fmt.Sprintf("ERR unknown command '%s'", cmd))
-	}
-
-	lo, hi := arity.min, arity.max
-	if len(args) < lo || len(args) > hi {
-		return encodeError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", cmd))
-	}
-
-	return ""
 }
 
 func handleCommand(cmd string, args []string) string {
@@ -294,6 +322,16 @@ func handleCommand(cmd string, args []string) string {
 		return cmdSCard(args[0])
 	case "SREM":
 		return cmdSRem(args[0], args[1:]...)
+	case "ZADD":
+		return cmdZAdd(args[0], args[1:]...)
+	case "ZRANGE":
+		return cmdZRange(args[0], args[1], args[2])
+	case "ZSCORE":
+		return cmdZScore(args[0], args[1])
+	case "ZCARD":
+		return cmdZCard(args[0])
+	case "ZRANK":
+		return cmdZRank(args[0], args[1])
 	case "WAIT":
 		ms, _ := strconv.ParseInt(args[0], 10, 64)
 		clock += ms
@@ -301,7 +339,7 @@ func handleCommand(cmd string, args []string) string {
 		// return encodeError("ERR time not implemented")
 	}
 
-	return encodeError("ERR unknown command")
+	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
 }
 
 func cmdType(key string) string {
@@ -333,6 +371,99 @@ func cmdAccumulate(sign int, key, amount string) string {
 	keyType[key] = "string"
 
 	return encodeInteger(sum)
+}
+
+func cmdZRank(key, member string) string {
+	zset, found := zsets[key]
+	if !found {
+		return encodeArray(nil)
+	}
+	out := 0
+	for i, m := range zset.GetSorted() {
+		if member == m {
+			return encodeInteger(i)
+		}
+		out++
+	}
+	return encodeNil()
+}
+
+func cmdZCard(key string) string {
+	zset, found := zsets[key]
+	if !found {
+		return encodeArray(nil)
+	}
+	return encodeInteger(zset.Len())
+}
+
+func cmdZScore(key, member string) string {
+	zset, found := zsets[key]
+	if !found {
+		return encodeArray(nil)
+	}
+	s, found := zset.scores[member]
+	if !found {
+		return encodeArray(nil)
+	}
+	return encodeBulkString(strconv.FormatFloat(s, 'f', -1, 64))
+}
+
+func cmdZRange(args ...string) string {
+	key := args[0]
+	zset, found := zsets[key]
+	if !found {
+		return encodeArray(nil)
+	}
+
+	start, stop, err := clampRange(args[1], args[2], zset.Len())
+	if err != "" {
+		return err
+	}
+
+	isWithScore := len(args) == 4 && args[3] == "WITHSCORES"
+
+	out := []string{}
+	for _, m := range zset.GetSorted() {
+		out = append(out, m)
+		if isWithScore {
+			out = append(out, strconv.FormatFloat(zset.scores[m], 'f', -1, 64))
+		}
+	}
+	return encodeArray(out[start : stop+1])
+}
+
+func cmdZAdd(key string, args ...string) string {
+	for len(args)%2 != 0 {
+		return encodeError("ERR params must be in key-value-pair")
+	}
+
+	bucket := make(map[string]float64)
+	for i := 0; i < len(args); i += 2 {
+		s, err := strconv.ParseFloat(args[i], 64)
+		if err != nil {
+			return encodeError("ERR params must be in score-value-pair")
+		}
+
+		bucket[args[i+1]] = s
+	}
+
+	if err := isWrongType(key, "zsets"); err != "" {
+		return err
+	}
+
+	zset, found := zsets[key]
+	if !found {
+		zset = &ZSet{}
+		zsets[key] = zset
+		keyType[key] = "zsets"
+	}
+
+	out := 0
+	for v, s := range bucket {
+		out += zset.Add(s, v)
+	}
+
+	return encodeInteger(out)
 }
 
 func cmdSRem(key string, args ...string) string {
@@ -648,34 +779,15 @@ func cmdLRange(args ...string) string {
 	key := args[0]
 	expiryIfNeeded(key)
 
-	start, err := strconv.Atoi(args[1])
-	if err != nil {
-		return encodeError("ERR value is not an integer or out of range")
-	}
-	stop, err := strconv.Atoi(args[2])
-	if err != nil {
-		return encodeError("ERR value is not an integer or out of range")
-	}
-
 	list := lists[key]
 	if list == nil {
 		return encodeArray(nil)
 	}
+
 	ln := list.Len()
-	if start < 0 {
-		start = ln + start
-	}
-	if stop < 0 {
-		stop = ln + stop
-	}
-	if start < 0 {
-		start = 0
-	}
-	if stop >= ln {
-		stop = ln - 1
-	}
-	if start > stop {
-		return encodeArray(nil)
+	start, stop, err := clampRange(args[1], args[2], ln)
+	if err != "" {
+		return err
 	}
 
 	return encodeArray(list.Sub(start, stop))
@@ -753,6 +865,56 @@ func cmdPush(sign string, key string, args ...string) string {
 	lists[key] = list
 
 	return encodeInteger(list.Len())
+}
+
+func isWrongType(key, want string) string {
+	if t, ok := keyType[key]; ok && t != want {
+		return encodeError("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+	return ""
+}
+
+func checkArity(cmd string, args ...string) string {
+	arity, ok := ARITIES[cmd]
+	if !ok {
+		return encodeError(fmt.Sprintf("ERR unknown command '%s'", cmd))
+	}
+
+	lo, hi := arity.min, arity.max
+	if len(args) < lo || len(args) > hi {
+		return encodeError(fmt.Sprintf("ERR wrong number of arguments for '%s' command", cmd))
+	}
+
+	return ""
+}
+
+func clampRange(start string, stop string, ln int) (int, int, string) {
+	s1, err := strconv.Atoi(start)
+	if err != nil {
+		return -1, -1, encodeError("ERR value is not an integer or out of range")
+	}
+
+	s2, err := strconv.Atoi(stop)
+	if err != nil {
+		return -1, -1, encodeError("ERR value is not an integer or out of range")
+	}
+
+	if s1 < 0 {
+		s1 = ln + s1
+	}
+	if s2 < 0 {
+		s2 = ln + s2
+	}
+	if s1 < 0 {
+		s1 = 0
+	}
+	if s2 >= ln {
+		s2 = ln - 1
+	}
+	if s1 > s2 {
+		return -1, -1, encodeArray(nil)
+	}
+	return s1, s2, ""
 }
 
 func encodeArray(items []string) string {
