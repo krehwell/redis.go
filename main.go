@@ -64,7 +64,7 @@ var clock int64 = 0 // simulated clock in milliseconds
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
-var keyType = map[string]string{}
+var keyTypes = map[string]string{}
 var lists = map[string]*List{}
 var sets = map[string]*Set{}
 var zsets = map[string]*ZSet{}
@@ -348,7 +348,7 @@ func handleCommand(cmd string, args []string) string {
 }
 
 func cmdRename(source, dest string) string {
-	t, found := keyType[source]
+	t, found := keyTypes[source]
 	if !found {
 		return encodeError("ERR no such key")
 	}
@@ -385,7 +385,7 @@ func cmdKeys(keys ...string) string {
 	}
 	remember := map[string]bool{}
 	out := []string{}
-	for _, t := range keyType {
+	for _, t := range keyTypes {
 		if v := remember[t]; v {
 			remember[t] = true
 			out = append(out, t)
@@ -419,7 +419,7 @@ func cmdDel(keys ...string) string {
 			delete(hashes, k)
 			delete(sets, k)
 			delete(zsets, k)
-			delete(keyType, k)
+			delete(keyTypes, k)
 			delete(expires, k)
 			out++
 		}
@@ -429,7 +429,7 @@ func cmdDel(keys ...string) string {
 
 func cmdType(key string) string {
 	expiryIfNeeded(key)
-	t, found := keyType[key]
+	t, found := keyTypes[key]
 	if found {
 		return encodeSimpleString(t)
 	}
@@ -454,7 +454,7 @@ func cmdAccumulate(sign int, key, amount string) string {
 
 	sum := n + sign*add
 	storage[key] = strconv.Itoa(sum)
-	keyType[key] = "string"
+	keyTypes[key] = "string"
 
 	return encodeInteger(sum)
 }
@@ -541,7 +541,7 @@ func cmdZAdd(key string, args ...string) string {
 	if !found {
 		zset = &ZSet{}
 		zsets[key] = zset
-		keyType[key] = "zset"
+		keyTypes[key] = "zset"
 	}
 
 	out := 0
@@ -565,7 +565,7 @@ func cmdSRem(key string, args ...string) string {
 
 	if set.Len() == 0 {
 		delete(sets, key)
-		delete(keyType, key)
+		delete(keyTypes, key)
 	}
 
 	return encodeInteger(out)
@@ -604,7 +604,7 @@ func cmdSAdd(key string, args ...string) string {
 	if !found {
 		set = &Set{}
 		sets[key] = set
-		keyType[key] = "set"
+		keyTypes[key] = "set"
 	}
 
 	out := 0
@@ -785,7 +785,7 @@ func expiryIfNeeded(key string) bool {
 	if IsExpire(key) {
 		delete(storage, key)
 		delete(expires, key)
-		delete(keyType, key)
+		delete(keyTypes, key)
 		delete(lists, key)
 		return true
 	}
@@ -848,7 +848,7 @@ func cmdSet(key, value string, opts ...string) string {
 	}
 
 	storage[key] = value
-	keyType[key] = "string"
+	keyTypes[key] = "string"
 
 	if hasTtl {
 		expires[key] = now().Add(ttl)
@@ -914,7 +914,7 @@ func cmdPop(sign string, key string, args ...string) string {
 
 	if list.Len() == 0 {
 		delete(lists, key)
-		delete(keyType, key)
+		delete(keyTypes, key)
 	}
 
 	return encodeBulkString(out)
@@ -937,7 +937,7 @@ func cmdPush(sign string, key string, args ...string) string {
 	if !found {
 		list = &List{}
 		lists[key] = list
-		keyType[key] = "list"
+		keyTypes[key] = "list"
 	}
 
 	for _, v := range args {
@@ -954,7 +954,7 @@ func cmdPush(sign string, key string, args ...string) string {
 }
 
 func isWrongType(key, want string) string {
-	if t, ok := keyType[key]; ok && t != want {
+	if t, ok := keyTypes[key]; ok && t != want {
 		return encodeError("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 	return ""
