@@ -32,14 +32,17 @@ var ARITIES = map[string]Arity{
 	"PTTL":      {1, 1},
 	"PERSIST":   {1, 1},
 	"WAIT":      {1, 1},
-	"EXISTS":    {1, 1},
+	"EXISTS":    {1, 128},
+	"DEL":       {1, 128},
+	"KEYS":      {1, 1},
+	"TYPE":      {1, 1},
+	"RENAME":    {2, 2},
 	"LPUSH":     {2, 128},
 	"RPUSH":     {2, 128},
 	"LPOP":      {1, 1},
 	"RPOP":      {1, 1},
 	"LLEN":      {1, 1},
 	"LRANGE":    {3, 3},
-	"TYPE":      {1, 1},
 	"HSET":      {2, 128},
 	"HGET":      {2, 2},
 	"HGETALL":   {1, 1},
@@ -61,13 +64,13 @@ var clock int64 = 0 // simulated clock in milliseconds
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
-var lists = map[string]*List{}
 var keyType = map[string]string{}
+var lists = map[string]*List{}
 var sets = map[string]*Set{}
 var zsets = map[string]*ZSet{}
-
-// { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
-var hashes = make(map[string]map[string]string)
+var hashes = make(
+	map[string]map[string]string,
+) // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
 
 type Node struct {
 	val  string
@@ -287,11 +290,13 @@ func handleCommand(cmd string, args []string) string {
 	case "PERSIST":
 		return cmdPersist(args...)
 	case "EXISTS":
-		expiryIfNeeded(args[0])
-		if _, found := storage[args[0]]; found {
-			return encodeInteger(1)
-		}
-		return encodeInteger(0)
+		return cmdExists(args...)
+	case "DEL":
+		return cmdDel(args...)
+	case "KEYS":
+		return cmdKeys(args...)
+	case "RENAME":
+		return cmdRename(args[0], args[1])
 	case "LPUSH", "RPUSH":
 		return cmdPush(cmd, args[0], args[1:]...)
 	case "LPOP", "RPOP":
@@ -342,7 +347,88 @@ func handleCommand(cmd string, args []string) string {
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
 }
 
+func cmdRename(source, dest string) string {
+	t, found := keyType[source]
+	if !found {
+		return encodeError("ERR no such key")
+	}
+
+	switch t {
+	case "string":
+		oldVal := storage[source]
+		delete(storage, source)
+		storage[dest] = oldVal
+	case "list":
+		oldVal := lists[source]
+		delete(lists, source)
+		lists[dest] = oldVal
+	case "set":
+		oldVal := sets[source]
+		delete(sets, source)
+		sets[dest] = oldVal
+	case "zset":
+		oldVal := zsets[source]
+		delete(zsets, source)
+		zsets[dest] = oldVal
+	case "hashes":
+		oldVal := hashes[source]
+		delete(hashes, source)
+		hashes[dest] = oldVal
+	}
+	return encodeSimpleString("OK")
+}
+
+// TODO not fully done as for now this can only be for '*'
+func cmdKeys(keys ...string) string {
+	if keys[0] != "*" {
+		return encodeError("WRONGTYPE Operation can only be glob '*' pattern now")
+	}
+	remember := map[string]bool{}
+	out := []string{}
+	for _, t := range keyType {
+		if v := remember[t]; v {
+			remember[t] = true
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return encodeArray(out)
+}
+
+func cmdExists(keys ...string) string {
+	out := 0
+	for _, k := range keys {
+		expiryIfNeeded(k)
+		if _, found := storage[k]; found {
+			out++
+		}
+	}
+	return encodeInteger(out)
+}
+
+func cmdDel(keys ...string) string {
+	out := 0
+	for _, k := range keys {
+		_, found := storage[k]
+		expiryIfNeeded(k)
+		if found {
+			delete(storage, k)
+			delete(lists, k)
+			delete(hashes, k)
+			delete(sets, k)
+			delete(zsets, k)
+			delete(keyType, k)
+			delete(expires, k)
+			out++
+		}
+	}
+	return encodeInteger(out)
+}
+
 func cmdType(key string) string {
+	expiryIfNeeded(key)
 	t, found := keyType[key]
 	if found {
 		return encodeSimpleString(t)
@@ -447,7 +533,7 @@ func cmdZAdd(key string, args ...string) string {
 		bucket[args[i+1]] = s
 	}
 
-	if err := isWrongType(key, "zsets"); err != "" {
+	if err := isWrongType(key, "zset"); err != "" {
 		return err
 	}
 
@@ -455,7 +541,7 @@ func cmdZAdd(key string, args ...string) string {
 	if !found {
 		zset = &ZSet{}
 		zsets[key] = zset
-		keyType[key] = "zsets"
+		keyType[key] = "zset"
 	}
 
 	out := 0
@@ -511,14 +597,14 @@ func cmdSIsMember(key, member string) string {
 func cmdSAdd(key string, args ...string) string {
 	set, found := sets[key]
 
-	if err := isWrongType(key, "sets"); err != "" {
+	if err := isWrongType(key, "set"); err != "" {
 		return err
 	}
 
 	if !found {
 		set = &Set{}
 		sets[key] = set
-		keyType[key] = "sets"
+		keyType[key] = "set"
 	}
 
 	out := 0
@@ -810,7 +896,7 @@ func cmdPop(sign string, key string, args ...string) string {
 
 	expiryIfNeeded(key)
 
-	if err := isWrongType(key, "lists"); err != "" {
+	if err := isWrongType(key, "list"); err != "" {
 		return err
 	}
 
@@ -843,7 +929,7 @@ func cmdPush(sign string, key string, args ...string) string {
 
 	expiryIfNeeded(key)
 
-	if err := isWrongType(key, "lists"); err != "" {
+	if err := isWrongType(key, "list"); err != "" {
 		return err
 	}
 
@@ -851,7 +937,7 @@ func cmdPush(sign string, key string, args ...string) string {
 	if !found {
 		list = &List{}
 		lists[key] = list
-		keyType[key] = "lists"
+		keyType[key] = "list"
 	}
 
 	for _, v := range args {
