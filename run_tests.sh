@@ -95,12 +95,16 @@ for dir in tests/${FILTER}*/; do
     expected="${input%.in}.out"
     actual="$(run_one "$input")"
     if [ "$actual" = "$(cat "$expected")" ]; then
+      echo -e "\n=========================================="
       pass=$((pass+1)); echo "PASS  $input"
+      echo -e "=========================================="
     else
+      echo -e "\n"
       fail=$((fail+1)); echo "FAIL  $input"
-      echo -e "expected:\n$(head -c 200 "$expected")"
-      echo -e "==========================================="
-      echo -e "got:\n$(printf '%s' "$actual" | head -c 200)"
+      echo -e "=========================================="
+      echo -e "EXPECTED:\n$(head -c 200 "$expected")"
+      echo -e "------------------------------------------"
+      echo -e "GOT:\n$(printf '%s' "$actual" | head -c 200)"
     fi
   done
 done

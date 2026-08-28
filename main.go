@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,9 @@ var ARITIES = map[string]Arity{
 	"ZSCORE":    {2, 2},
 	"ZCARD":     {1, 1},
 	"ZRANK":     {2, 2},
+	"MULTI":     {0, 0},
+	"EXEC":      {0, 0},
+	"DISCARD":   {0, 0},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -71,6 +75,166 @@ var zsets = map[string]*ZSet{}
 var hashes = make(
 	map[string]map[string]string,
 ) // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
+
+type QueuedCmd struct {
+	cmd  string
+	args []string
+}
+
+type ClientState struct {
+	isInMulti bool
+	queued    []QueuedCmd
+}
+
+func (c *ClientState) Dispatch(cmd string, args ...string) string {
+	if c.isInMulti && !slices.Contains([]string{"EXEC", "DISCARD", "MULTI"}, cmd) {
+		c.queued = append(c.queued, QueuedCmd{cmd, args})
+		return encodeSimpleString("QUEUED")
+	}
+
+	cmd = strings.ToUpper(cmd)
+
+	err := checkArity(cmd, args[0:]...)
+	if err != "" {
+		return err
+	}
+
+	switch cmd {
+	case "PING":
+		if len(args) > 0 {
+			return encodeBulkString(args[0])
+		}
+		return encodeSimpleString("PONG")
+	case "ECHO":
+		return encodeBulkString(args[0])
+	case "COMMAND":
+		if args[0] == "DOCS" {
+			return encodeSimpleString("OK")
+		}
+	case "SET":
+		return cmdSet(args[0], args[1], args[2:]...)
+	case "GET":
+		return cmdGet(args[0])
+	case "INCR":
+		return cmdAccumulate(1, args[0], "1")
+	case "DECR":
+		return cmdAccumulate(-1, args[0], "1")
+	case "INCRBY":
+		return cmdAccumulate(1, args[0], args[1])
+	case "DECRBY":
+		return cmdAccumulate(-1, args[0], args[1])
+	case "DBSIZE":
+		eagerExpirySweep()
+		return encodeInteger(len(storage))
+	case "EXPIRE":
+		return cmdExpire(args...)
+	case "TTL":
+		return cmdTtl(args...)
+	case "PTTL":
+		return cmdPttl(args...)
+	case "PERSIST":
+		return cmdPersist(args...)
+	case "EXISTS":
+		return cmdExists(args...)
+	case "DEL":
+		return cmdDel(args...)
+	case "KEYS":
+		return cmdKeys(args...)
+	case "RENAME":
+		return cmdRename(args[0], args[1])
+	case "LPUSH", "RPUSH":
+		return cmdPush(cmd, args[0], args[1:]...)
+	case "LPOP", "RPOP":
+		return cmdPop(cmd, args[0], args[1:]...)
+	case "LRANGE":
+		return cmdLRange(args...)
+	case "LLEN":
+		return cmdLlen(args[0])
+	case "TYPE":
+		return cmdType(args[0])
+	case "HSET":
+		return cmdHSet(args[0], args[1:]...)
+	case "HGET":
+		return cmdHGet(args[0], args[1])
+	case "HDEL":
+		return cmdHDel(args[0], args[1:]...)
+	case "HGETALL":
+		return cmdHGetAll(args[0])
+	case "HEXISTS":
+		return cmdHExists(args[0], args[1])
+	case "HLEN":
+		return cmdHLen(args[0])
+	case "SADD":
+		return cmdSAdd(args[0], args[1:]...)
+	case "SISMEMBER":
+		return cmdSIsMember(args[0], args[1])
+	case "SCARD":
+		return cmdSCard(args[0])
+	case "SREM":
+		return cmdSRem(args[0], args[1:]...)
+	case "ZADD":
+		return cmdZAdd(args[0], args[1:]...)
+	case "ZRANGE":
+		return cmdZRange(args[0], args[1], args[2])
+	case "ZSCORE":
+		return cmdZScore(args[0], args[1])
+	case "ZCARD":
+		return cmdZCard(args[0])
+	case "ZRANK":
+		return cmdZRank(args[0], args[1])
+	case "WAIT":
+		ms, _ := strconv.ParseInt(args[0], 10, 64)
+		clock += ms
+		return encodeSimpleString("OK")
+	case "MULTI":
+		return c.Multi()
+	case "DISCARD":
+		return c.Discard()
+	case "EXEC":
+		return c.Exec()
+		// return encodeError("ERR time not implemented")
+	}
+
+	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
+}
+
+func (c *ClientState) Multi() string {
+	if c.isInMulti {
+		return encodeError("ERR MULTI calls can not be nested")
+	}
+	c.isInMulti = true
+	c.queued = []QueuedCmd{}
+	return encodeSimpleString("OK")
+}
+
+func (c *ClientState) Exec() string {
+	if !c.isInMulti {
+		return encodeError("ERR EXEC without MULTI")
+	}
+
+	c.isInMulti = false
+	queue := c.queued
+	c.queued = nil
+	out := fmt.Sprintf("*%d\r\n", len(queue))
+	for _, q := range queue {
+		cmd, args := q.cmd, q.args
+		out += c.Dispatch(cmd, args...)
+	}
+	return out
+}
+
+func (c *ClientState) Discard() string {
+	c.isInMulti = false
+	c.queued = []QueuedCmd{}
+	return encodeSimpleString("OK")
+}
+
+func NewClientState() *ClientState {
+	return &ClientState{
+		isInMulti: false,
+		queued:    []QueuedCmd{},
+	}
+}
 
 type Node struct {
 	val  string
@@ -244,107 +408,6 @@ func (s *Set) Remove(v string) int {
 	delete(s.val, v)
 	s.n--
 	return 1
-}
-
-func handleCommand(cmd string, args []string) string {
-	cmd = strings.ToUpper(cmd)
-
-	err := checkArity(cmd, args[0:]...)
-	if err != "" {
-		return err
-	}
-
-	switch cmd {
-	case "PING":
-		if len(args) > 0 {
-			return encodeBulkString(args[0])
-		}
-		return encodeSimpleString("PONG")
-	case "ECHO":
-		return encodeBulkString(args[0])
-	case "COMMAND":
-		if args[0] == "DOCS" {
-			return encodeSimpleString("OK")
-		}
-	case "SET":
-		return cmdSet(args[0], args[1], args[2:]...)
-	case "GET":
-		return cmdGet(args[0])
-	case "INCR":
-		return cmdAccumulate(1, args[0], "1")
-	case "DECR":
-		return cmdAccumulate(-1, args[0], "1")
-	case "INCRBY":
-		return cmdAccumulate(1, args[0], args[1])
-	case "DECRBY":
-		return cmdAccumulate(-1, args[0], args[1])
-	case "DBSIZE":
-		eagerExpirySweep()
-		return encodeInteger(len(storage))
-	case "EXPIRE":
-		return cmdExpire(args...)
-	case "TTL":
-		return cmdTtl(args...)
-	case "PTTL":
-		return cmdPttl(args...)
-	case "PERSIST":
-		return cmdPersist(args...)
-	case "EXISTS":
-		return cmdExists(args...)
-	case "DEL":
-		return cmdDel(args...)
-	case "KEYS":
-		return cmdKeys(args...)
-	case "RENAME":
-		return cmdRename(args[0], args[1])
-	case "LPUSH", "RPUSH":
-		return cmdPush(cmd, args[0], args[1:]...)
-	case "LPOP", "RPOP":
-		return cmdPop(cmd, args[0], args[1:]...)
-	case "LRANGE":
-		return cmdLRange(args...)
-	case "LLEN":
-		return cmdLlen(args[0])
-	case "TYPE":
-		return cmdType(args[0])
-	case "HSET":
-		return cmdHSet(args[0], args[1:]...)
-	case "HGET":
-		return cmdHGet(args[0], args[1])
-	case "HDEL":
-		return cmdHDel(args[0], args[1:]...)
-	case "HGETALL":
-		return cmdHGetAll(args[0])
-	case "HEXISTS":
-		return cmdHExists(args[0], args[1])
-	case "HLEN":
-		return cmdHLen(args[0])
-	case "SADD":
-		return cmdSAdd(args[0], args[1:]...)
-	case "SISMEMBER":
-		return cmdSIsMember(args[0], args[1])
-	case "SCARD":
-		return cmdSCard(args[0])
-	case "SREM":
-		return cmdSRem(args[0], args[1:]...)
-	case "ZADD":
-		return cmdZAdd(args[0], args[1:]...)
-	case "ZRANGE":
-		return cmdZRange(args[0], args[1], args[2])
-	case "ZSCORE":
-		return cmdZScore(args[0], args[1])
-	case "ZCARD":
-		return cmdZCard(args[0])
-	case "ZRANK":
-		return cmdZRank(args[0], args[1])
-	case "WAIT":
-		ms, _ := strconv.ParseInt(args[0], 10, 64)
-		clock += ms
-		return encodeSimpleString("OK")
-		// return encodeError("ERR time not implemented")
-	}
-
-	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
 }
 
 func cmdRename(source, dest string) string {
@@ -1058,13 +1121,14 @@ func parseArgs(line string) []string {
 
 func main() {
 	sc := bufio.NewScanner(os.Stdin)
+	client := NewClientState()
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
 		args := parseArgs(line)
-		fmt.Print(handleCommand(args[0], args[1:]))
+		fmt.Print(client.Dispatch(args[0], args[1:]...))
 	}
 }
 
