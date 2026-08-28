@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,6 +75,15 @@ var hashes = make(
 	map[string]map[string]string,
 ) // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
 
+func contains(slice []string, target string) bool {
+	for _, item := range slice {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 type QueuedCmd struct {
 	cmd  string
 	args []string
@@ -87,7 +95,7 @@ type ClientState struct {
 }
 
 func (c *ClientState) Dispatch(cmd string, args ...string) string {
-	if c.isInMulti && !slices.Contains([]string{"EXEC", "DISCARD", "MULTI"}, cmd) {
+	if c.isInMulti && !contains([]string{"EXEC", "DISCARD", "MULTI"}, cmd) {
 		c.queued = append(c.queued, QueuedCmd{cmd, args})
 		return encodeSimpleString("QUEUED")
 	}
