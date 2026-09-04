@@ -17,50 +17,53 @@ type Arity struct {
 }
 
 var ARITIES = map[string]Arity{
-	"PING":      {0, 1},
-	"ECHO":      {1, 1},
-	"COMMAND":   {1, 1},
-	"SET":       {2, 8},
-	"GET":       {1, 1},
-	"DBSIZE":    {0, 0},
-	"INCR":      {1, 1},
-	"DECR":      {1, 1},
-	"INCRBY":    {2, 2},
-	"DECRBY":    {2, 2},
-	"EXPIRE":    {2, 2},
-	"TTL":       {1, 1},
-	"PTTL":      {1, 1},
-	"PERSIST":   {1, 1},
-	"WAIT":      {1, 1},
-	"EXISTS":    {1, 128},
-	"DEL":       {1, 128},
-	"KEYS":      {1, 1},
-	"TYPE":      {1, 1},
-	"RENAME":    {2, 2},
-	"LPUSH":     {2, 128},
-	"RPUSH":     {2, 128},
-	"LPOP":      {1, 1},
-	"RPOP":      {1, 1},
-	"LLEN":      {1, 1},
-	"LRANGE":    {3, 3},
-	"HSET":      {2, 128},
-	"HGET":      {2, 2},
-	"HGETALL":   {1, 1},
-	"HEXISTS":   {2, 2},
-	"HDEL":      {2, 128},
-	"HLEN":      {1, 1},
-	"SADD":      {2, 128},
-	"SCARD":     {1, 1},
-	"SISMEMBER": {2, 2},
-	"SREM":      {2, 128},
-	"ZADD":      {3, 128},
-	"ZRANGE":    {3, 4},
-	"ZSCORE":    {2, 2},
-	"ZCARD":     {1, 1},
-	"ZRANK":     {2, 2},
-	"MULTI":     {0, 0},
-	"EXEC":      {0, 0},
-	"DISCARD":   {0, 0},
+	"PING":        {0, 1},
+	"ECHO":        {1, 1},
+	"COMMAND":     {1, 1},
+	"SET":         {2, 8},
+	"GET":         {1, 1},
+	"DBSIZE":      {0, 0},
+	"INCR":        {1, 1},
+	"DECR":        {1, 1},
+	"INCRBY":      {2, 2},
+	"DECRBY":      {2, 2},
+	"EXPIRE":      {2, 2},
+	"TTL":         {1, 1},
+	"PTTL":        {1, 1},
+	"PERSIST":     {1, 1},
+	"WAIT":        {1, 1},
+	"EXISTS":      {1, 128},
+	"DEL":         {1, 128},
+	"KEYS":        {1, 1},
+	"TYPE":        {1, 1},
+	"RENAME":      {2, 2},
+	"LPUSH":       {2, 128},
+	"RPUSH":       {2, 128},
+	"LPOP":        {1, 1},
+	"RPOP":        {1, 1},
+	"LLEN":        {1, 1},
+	"LRANGE":      {3, 3},
+	"HSET":        {2, 128},
+	"HGET":        {2, 2},
+	"HGETALL":     {1, 1},
+	"HEXISTS":     {2, 2},
+	"HDEL":        {2, 128},
+	"HLEN":        {1, 1},
+	"SADD":        {2, 128},
+	"SCARD":       {1, 1},
+	"SISMEMBER":   {2, 2},
+	"SREM":        {2, 128},
+	"ZADD":        {3, 128},
+	"ZRANGE":      {3, 4},
+	"ZSCORE":      {2, 2},
+	"ZCARD":       {1, 1},
+	"ZRANK":       {2, 2},
+	"MULTI":       {0, 0},
+	"EXEC":        {0, 0},
+	"DISCARD":     {0, 0},
+	"SUBSCRIBE":   {1, 128},
+	"PUBLISH":     {2, 2},
+	"UNSUBSCRIBE": {0, 128},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -74,6 +77,8 @@ var zsets = map[string]*ZSet{}
 var hashes = make(
 	map[string]map[string]string,
 ) // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
+var channelSubscriber = map[string][]string{}
+var mySubscriptions = Set{}
 
 type QueuedCmd struct {
 	cmd  string
@@ -200,6 +205,12 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return c.Discard()
 	case "EXEC":
 		return c.Exec()
+	case "SUBSCRIBE":
+		return cmdSubscribe(args...)
+	case "PUBLISH":
+		return cmdPublish(args[0], args[1])
+	case "UNSUBSCRIBE":
+		return cmdUnsubscribe(args...)
 		// return encodeError("ERR time not implemented")
 	}
 
@@ -447,6 +458,53 @@ func cmdRename(source, dest string) string {
 		hashes[dest] = oldVal
 	}
 	return encodeSimpleString("OK")
+}
+
+func cmdSubscribe(channels ...string) string {
+	out := []string{}
+	for _, ch := range channels {
+		mySubscriptions.Add(ch)
+		channelSubscriber[ch] = []string{
+			"clientId",
+		} // maybe this should actully be an actual clientId who requested it
+		reply := fmt.Sprintf("subscribe %s %d", ch, mySubscriptions.Len())
+		out = append(out, encodeSimpleString(reply))
+	}
+	return strings.Join(out, "")
+}
+
+func cmdPublish(channel, message string) string {
+	count := 1
+	_, found := channelSubscriber[channel]
+	if !found {
+		count = 0
+	}
+
+	out := []string{}
+	if mySubscriptions.IsMember(channel) {
+		reply := fmt.Sprintf("message %s %s", channel, message)
+		out = append(out, encodeSimpleString(reply))
+	}
+
+	out = append(out, encodeInteger(count))
+	return strings.Join(out, "")
+}
+
+func cmdUnsubscribe(channels ...string) string {
+	out := []string{}
+	if len(channels) == 0 {
+		for key := range mySubscriptions.val {
+			channels = append(channels, key)
+		}
+	}
+
+	for _, ch := range channels {
+		mySubscriptions.Remove(ch)
+		delete(channelSubscriber, ch)
+		reply := fmt.Sprintf("unsubscribe %s %d", ch, mySubscriptions.Len())
+		out = append(out, encodeSimpleString(reply))
+	}
+	return strings.Join(out, "")
 }
 
 // TODO not fully done as for now this can only be for '*'
