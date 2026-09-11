@@ -64,6 +64,8 @@ var ARITIES = map[string]Arity{
 	"SUBSCRIBE":   {1, 128},
 	"PUBLISH":     {2, 2},
 	"UNSUBSCRIBE": {0, 128},
+	"SAVE":        {0, 0},
+	"RESTORE":     {1, 1},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -76,7 +78,7 @@ var sets = map[string]*Set{}
 var zsets = map[string]*ZSet{}
 var hashes = make(
 	map[string]map[string]string,
-) // { "user:1": { "name": "alice", "email": "a@mail.com" }, "user:2", { "name": "bob", "age": "30" } }
+) // { "user1": { "name": "alice", "email": "a@mail.com" }, "user2", { "name": "bob", "age": "30" } }
 var channelSubscriber = map[string][]string{}
 var mySubscriptions = Set{}
 
@@ -211,10 +213,89 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return cmdPublish(args[0], args[1])
 	case "UNSUBSCRIBE":
 		return cmdUnsubscribe(args...)
+	case "SAVE":
+		return cmdSave()
+	case "RESTORE":
+		return cmdRestore(args[0])
 		// return encodeError("ERR time not implemented")
 	}
 
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
+}
+
+func cmdSave() string {
+	keys := make([]string, 0, len(keyTypes))
+	for k := range keyTypes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	lines := []string{}
+	for _, k := range keys {
+		t := keyTypes[k]
+		switch t {
+		case "string":
+			l := fmt.Sprintf("KEY string %s %s", k, storage[k])
+			lines = append(lines, l)
+		case "list":
+			l := fmt.Sprintf("KEY list %s %s", k, strings.Join(lists[k].Values(), ","))
+			lines = append(lines, l)
+		case "hash":
+			pairs := ""
+			for f, v := range hashes[k] {
+				if pairs != "" {
+					pairs += ","
+				}
+				pairs += fmt.Sprintf("%s=%s", f, v)
+			}
+			l := fmt.Sprintf("KEY hash %s %s", k, pairs)
+			lines = append(lines, l)
+		case "set":
+			l := fmt.Sprintf("KEY set %s %s", k, strings.Join(sets[k].Values(), ","))
+			lines = append(lines, l)
+		}
+	}
+
+	return strings.Join(lines, "\r\n") + "\r\n+OK\r\n"
+}
+
+func cmdRestore(data string) string {
+	for _, line := range strings.Split(strings.Trim(strings.Replace(data, "\r\n", "\n", -1), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+
+		s := strings.Split(line, " ")
+		typeName := s[1]
+		key := s[2]
+		encoded := s[3]
+
+		switch typeName {
+		case "string":
+			storage[key] = encoded
+		case "list":
+			list := &List{}
+			for _, v := range strings.Split(encoded, ",") {
+				list.PushRight(v)
+			}
+			lists[key] = list
+		case "hash":
+			hash := make(map[string]string)
+			for _, pair := range strings.Split(encoded, ",") {
+				kv := strings.Split(pair, "=")
+				hash[kv[0]] = kv[1]
+			}
+			hashes[key] = hash
+		case "set":
+			set := &Set{}
+			for _, v := range strings.Split(encoded, ",") {
+				set.Add(v)
+			}
+			sets[key] = set
+		}
+	}
+
+	return encodeSimpleString("OK")
 }
 
 func (c *ClientState) Multi() string {
@@ -326,7 +407,7 @@ func (l *List) PopRight() string {
 
 func (l *List) Values() []string {
 	out := []string{}
-	for i := l.head; i != l.tail; i = i.next {
+	for i := l.head; i != nil; i = i.next {
 		out = append(out, i.val)
 	}
 	return out
@@ -427,6 +508,14 @@ func (s *Set) Remove(v string) int {
 	delete(s.val, v)
 	s.n--
 	return 1
+}
+
+func (s *Set) Values() []string {
+	out := make([]string, 0, s.Len())
+	for k := range s.val {
+		out = append(out, k)
+	}
+	return out
 }
 
 func cmdRename(source, dest string) string {
