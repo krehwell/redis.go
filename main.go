@@ -69,6 +69,8 @@ var ARITIES = map[string]Arity{
 	"AOF":         {1, 1},
 	"MAXKEYS":     {1, 1},
 	"INFO":        {1, 1},
+	"WATCH":       {1, 128},
+	"UNWATCH":     {0, 0},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -110,6 +112,8 @@ type ClientState struct {
 	aofOn     bool
 	aofLog    []string
 	maxKeys   int
+	version   map[string]int
+	watched   map[string]int
 }
 
 func contains(slice []string, target string) bool {
@@ -134,8 +138,14 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return err
 	}
 
-	if c.aofOn && contains(WRITE_COMMANDS, cmd) {
-		c.aofLog = append(c.aofLog, cmd+" "+strings.Join(args, " "))
+	if contains(WRITE_COMMANDS, cmd) {
+		if len(args) > 0 {
+			c.Bump(args[0])
+		}
+
+		if c.aofOn {
+			c.aofLog = append(c.aofLog, cmd+" "+strings.Join(args, " "))
+		}
 	}
 
 	if len(args) > 0 {
@@ -235,6 +245,10 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return c.Discard()
 	case "EXEC":
 		return c.Exec()
+	case "WATCH":
+		return c.Watch(args...)
+	case "UNWATCH":
+		return c.UnWatch()
 	case "SUBSCRIBE":
 		return cmdSubscribe(args...)
 	case "PUBLISH":
@@ -265,9 +279,39 @@ func (c *ClientState) Multi() string {
 	return encodeSimpleString("OK")
 }
 
+func (c *ClientState) Bump(key string) {
+	c.version[key] += 1
+}
+
+func (c *ClientState) Watch(keys ...string) string {
+	if c.isInMulti {
+		return encodeNil()
+	}
+
+	for _, k := range keys {
+		c.watched[k] = c.version[k]
+	}
+
+	return encodeSimpleString("OK")
+}
+
+func (c *ClientState) UnWatch() string {
+	for k := range c.version {
+		delete(c.version, k)
+		delete(c.watched, k)
+	}
+	return encodeSimpleString("OK")
+}
+
 func (c *ClientState) Exec() string {
 	if !c.isInMulti {
 		return encodeError("ERR EXEC without MULTI")
+	}
+
+	for k := range c.watched {
+		if c.watched[k] != c.version[k] {
+			return encodeNil()
+		}
 	}
 
 	c.isInMulti = false
@@ -278,6 +322,7 @@ func (c *ClientState) Exec() string {
 		cmd, args := q.cmd, q.args
 		out += c.Dispatch(cmd, args...)
 	}
+	c.UnWatch()
 	return out
 }
 
@@ -329,6 +374,8 @@ func NewClientState() *ClientState {
 		aofOn:     false,
 		aofLog:    []string{},
 		maxKeys:   0,
+		version:   make(map[string]int),
+		watched:   make(map[string]int),
 	}
 }
 
