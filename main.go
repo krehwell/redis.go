@@ -346,7 +346,7 @@ func (c *ClientState) TryTouch(cmd, key string) {
 		}
 	}
 
-	for runCleaner && len(accessTimes) > c.maxKeys {
+	for runCleaner && c.maxKeys > 0 && len(accessTimes) > c.maxKeys {
 		victims := make([]string, 0, len(accessTimes))
 		for k := range accessTimes {
 			victims = append(victims, k)
@@ -751,6 +751,7 @@ func cmdUnsubscribe(channels ...string) string {
 		for key := range mySubscriptions.val {
 			channels = append(channels, key)
 		}
+		sort.Strings(channels)
 	}
 
 	for _, ch := range channels {
