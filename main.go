@@ -67,12 +67,11 @@ var ARITIES = map[string]Arity{
 	"SAVE":        {0, 0},
 	"RESTORE":     {1, 1},
 	"AOF":         {1, 1},
+	"MAXKEYS":     {1, 1},
+	"INFO":        {1, 1},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
-
-var aofOn = false
-var aofLog = []string{}
 
 var storage = map[string]string{}
 var expires = map[string]time.Time{}
@@ -86,6 +85,20 @@ var hashes = make(
 var channelSubscriber = map[string][]string{}
 var mySubscriptions = Set{}
 
+var WRITE_COMMANDS = []string{
+	"SET", "DEL", "LPUSH", "RPUSH", "LPOP", "RPOP",
+	"HSET", "HDEL", "SADD", "SREM", "ZADD",
+	"EXPIRE", "RENAME", "RESTORE",
+}
+
+var GET_COMMANDS = []string{
+	"GET", "EXISTS", "TTL", "PTTL", "HGET", "HGETALL",
+	"HEXISTS", "LRANGE", "LLEN", "SISMEMBER", "SCARD",
+	"ZRANGE", "ZSCORE", "ZCARD", "KEYS",
+}
+
+var accessTimes = make(map[string]time.Time)
+
 type QueuedCmd struct {
 	cmd  string
 	args []string
@@ -94,18 +107,21 @@ type QueuedCmd struct {
 type ClientState struct {
 	isInMulti bool
 	queued    []QueuedCmd
+	aofOn     bool
+	aofLog    []string
+	maxKeys   int
+}
+
+func contains(slice []string, target string) bool {
+	for _, item := range slice {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ClientState) Dispatch(cmd string, args ...string) string {
-	contains := func(slice []string, target string) bool {
-		for _, item := range slice {
-			if item == target {
-				return true
-			}
-		}
-		return false
-	}
-
 	if c.isInMulti && !contains([]string{"EXEC", "DISCARD", "MULTI"}, cmd) {
 		c.queued = append(c.queued, QueuedCmd{cmd, args})
 		return encodeSimpleString("QUEUED")
@@ -118,12 +134,12 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return err
 	}
 
-	if aofOn && contains(
-		// WRITE_COMMANDS
-		[]string{"SET", "DEL", "LPUSH", "RPUSH", "LPOP", "RPOP",
-			"HSET", "HDEL", "SADD", "SREM", "ZADD",
-			"EXPIRE", "RENAME", "RESTORE"}, cmd) {
-		aofLog = append(aofLog, cmd+" "+strings.Join(args, " "))
+	if c.aofOn && contains(WRITE_COMMANDS, cmd) {
+		c.aofLog = append(c.aofLog, cmd+" "+strings.Join(args, " "))
+	}
+
+	if len(args) > 0 {
+		c.TryTouch(cmd, args[0])
 	}
 
 	switch cmd {
@@ -229,9 +245,12 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return cmdSave()
 	case "RESTORE":
 		return cmdRestore(args[0])
-		// return encodeError("ERR time not implemented")
 	case "AOF":
-		return cmdAof(args[0])
+		return cmdAof(c, args[0])
+	case "MAXKEYS":
+		return cmdMaxKeys(c, args[0])
+	case "INFO":
+		return cmdInfo(c, args...)
 	}
 
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
@@ -268,10 +287,48 @@ func (c *ClientState) Discard() string {
 	return encodeSimpleString("OK")
 }
 
+func (c *ClientState) TryTouch(cmd, key string) {
+	runCleaner := false
+	if contains(WRITE_COMMANDS, cmd) {
+		runCleaner = true
+		accessTimes[key] = now()
+	}
+
+	if contains(GET_COMMANDS, cmd) {
+		if _, found := keyTypes[key]; found {
+			runCleaner = true
+			accessTimes[key] = now()
+		}
+	}
+
+	for runCleaner && len(accessTimes) > c.maxKeys {
+		victims := make([]string, 0, len(accessTimes))
+		for k := range accessTimes {
+			victims = append(victims, k)
+		}
+		sort.Slice(victims, func(i, j int) bool {
+			return accessTimes[victims[i]].Before(accessTimes[victims[j]])
+		})
+
+		keyToRemove := victims[0]
+		delete(storage, keyToRemove)
+		delete(lists, keyToRemove)
+		delete(hashes, keyToRemove)
+		delete(sets, keyToRemove)
+		delete(zsets, keyToRemove)
+		delete(keyTypes, keyToRemove)
+		delete(expires, keyToRemove)
+		delete(accessTimes, keyToRemove)
+	}
+}
+
 func NewClientState() *ClientState {
 	return &ClientState{
 		isInMulti: false,
 		queued:    []QueuedCmd{},
+		aofOn:     false,
+		aofLog:    []string{},
+		maxKeys:   0,
 	}
 }
 
@@ -457,33 +514,50 @@ func (s *Set) Values() []string {
 	return out
 }
 
-func cmdAof(command string) string {
+func cmdMaxKeys(client *ClientState, max string) string {
+	m, err := strconv.Atoi(max)
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+	client.maxKeys = m
+	return encodeSimpleString("OK")
+}
+
+func cmdInfo(client *ClientState, args ...string) string {
+	want := args[0]
+	if want == "memory" {
+		out := fmt.Sprintf("keys:%d,maxkeys:%d", len(keyTypes), client.maxKeys)
+		return encodeBulkString(out)
+	}
+	return ""
+}
+
+func cmdAof(client *ClientState, command string) string {
 	switch command {
 	case "ON":
-		aofOn = true
+		client.aofOn = true
 		return encodeSimpleString("OK")
 	case "OFF":
-		aofOn = false
+		client.aofOn = false
 		return encodeSimpleString("OK")
 	}
 
 	switch command {
 	case "DUMP":
 		out := ""
-		for _, line := range aofLog {
+		for _, line := range client.aofLog {
 			out += "$" + strconv.Itoa(len(line)) + "\r\n"
 			out += line + "\r\n"
 		}
 		return out + "+OK\r\n"
 	case "REPLAY":
-		client := NewClientState()
-		for _, line := range aofLog {
+		for _, line := range client.aofLog {
 			args := parseArgs(line)
 			client.Dispatch(args[0], args[1:]...)
 		}
 		return encodeSimpleString("OK")
 	case "CLEAR":
-		aofLog = []string{}
+		client.aofLog = []string{}
 	}
 	return ""
 }
@@ -684,6 +758,7 @@ func cmdDel(keys ...string) string {
 			delete(zsets, k)
 			delete(keyTypes, k)
 			delete(expires, k)
+			delete(accessTimes, k)
 			out++
 		}
 	}
