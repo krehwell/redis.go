@@ -17,61 +17,65 @@ type Arity struct {
 }
 
 var ARITIES = map[string]Arity{
-	"PING":        {0, 1},
-	"ECHO":        {1, 1},
-	"COMMAND":     {1, 1},
-	"SET":         {2, 8},
-	"GET":         {1, 1},
-	"DBSIZE":      {0, 0},
-	"INCR":        {1, 1},
-	"DECR":        {1, 1},
-	"INCRBY":      {2, 2},
-	"DECRBY":      {2, 2},
-	"EXPIRE":      {2, 2},
-	"TTL":         {1, 1},
-	"PTTL":        {1, 1},
-	"PERSIST":     {1, 1},
-	"WAIT":        {1, 1},
-	"EXISTS":      {1, 128},
-	"DEL":         {1, 128},
-	"KEYS":        {1, 1},
-	"TYPE":        {1, 1},
-	"RENAME":      {2, 2},
-	"LPUSH":       {2, 128},
-	"RPUSH":       {2, 128},
-	"LPOP":        {1, 1},
-	"RPOP":        {1, 1},
-	"LLEN":        {1, 1},
-	"LRANGE":      {3, 3},
-	"HSET":        {2, 128},
-	"HGET":        {2, 2},
-	"HGETALL":     {1, 1},
-	"HEXISTS":     {2, 2},
-	"HDEL":        {2, 128},
-	"HLEN":        {1, 1},
-	"SADD":        {2, 128},
-	"SCARD":       {1, 1},
-	"SISMEMBER":   {2, 2},
-	"SREM":        {2, 128},
-	"ZADD":        {3, 128},
-	"ZRANGE":      {3, 4},
-	"ZSCORE":      {2, 2},
-	"ZCARD":       {1, 1},
-	"ZRANK":       {2, 2},
-	"MULTI":       {0, 0},
-	"EXEC":        {0, 0},
-	"DISCARD":     {0, 0},
-	"SUBSCRIBE":   {1, 128},
-	"PUBLISH":     {2, 2},
-	"UNSUBSCRIBE": {0, 128},
-	"SAVE":        {0, 0},
-	"RESTORE":     {1, 1},
-	"AOF":         {1, 1},
-	"MAXKEYS":     {1, 1},
-	"INFO":        {1, 1},
-	"WATCH":       {1, 128},
-	"UNWATCH":     {0, 0},
-	"EVAL":        {2, 128},
+	"PING":            {0, 1},
+	"ECHO":            {1, 1},
+	"COMMAND":         {1, 1},
+	"SET":             {2, 8},
+	"GET":             {1, 1},
+	"DBSIZE":          {0, 0},
+	"INCR":            {1, 1},
+	"DECR":            {1, 1},
+	"INCRBY":          {2, 2},
+	"DECRBY":          {2, 2},
+	"EXPIRE":          {2, 2},
+	"TTL":             {1, 1},
+	"PTTL":            {1, 1},
+	"PERSIST":         {1, 1},
+	"WAIT":            {1, 1},
+	"EXISTS":          {1, 128},
+	"DEL":             {1, 128},
+	"KEYS":            {1, 1},
+	"TYPE":            {1, 1},
+	"RENAME":          {2, 2},
+	"LPUSH":           {2, 128},
+	"RPUSH":           {2, 128},
+	"LPOP":            {1, 1},
+	"RPOP":            {1, 1},
+	"LLEN":            {1, 1},
+	"LRANGE":          {3, 3},
+	"HSET":            {2, 128},
+	"HGET":            {2, 2},
+	"HGETALL":         {1, 1},
+	"HEXISTS":         {2, 2},
+	"HDEL":            {2, 128},
+	"HLEN":            {1, 1},
+	"SADD":            {2, 128},
+	"SCARD":           {1, 1},
+	"SISMEMBER":       {2, 2},
+	"SREM":            {2, 128},
+	"ZADD":            {3, 128},
+	"ZRANGE":          {3, 4},
+	"ZSCORE":          {2, 2},
+	"ZCARD":           {1, 1},
+	"ZRANK":           {2, 2},
+	"MULTI":           {0, 0},
+	"EXEC":            {0, 0},
+	"DISCARD":         {0, 0},
+	"SUBSCRIBE":       {1, 128},
+	"PUBLISH":         {2, 2},
+	"UNSUBSCRIBE":     {0, 128},
+	"SAVE":            {0, 0},
+	"RESTORE":         {1, 1},
+	"AOF":             {1, 1},
+	"MAXKEYS":         {1, 1},
+	"INFO":            {1, 1},
+	"WATCH":           {1, 128},
+	"UNWATCH":         {0, 0},
+	"EVAL":            {2, 128},
+	"REPLICAOF":       {2, 2},
+	"ROLE":            {0, 0},
+	"REPLICATION_LOG": {0, 0},
+	"PSYNC":           {2, 2},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -102,6 +106,10 @@ var GET_COMMANDS = []string{
 
 var accessTimes = make(map[string]time.Time)
 
+const REPLID = "abc0000000000000000000000000000000000000"
+
+var backlog = []string{}
+
 type QueuedCmd struct {
 	cmd  string
 	args []string
@@ -115,6 +123,7 @@ type ClientState struct {
 	maxKeys   int
 	version   map[string]int
 	watched   map[string]int
+	role      string
 }
 
 func contains(slice []string, target string) bool {
@@ -268,6 +277,14 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return cmdInfo(c, args...)
 	case "EVAL":
 		return cmdEval(c, args[0], args[1], args[2:]...)
+	case "REPLICAOF":
+		return cmdReplicaOf(c, args...)
+	case "ROLE":
+		return cmdRole(c)
+	case "REPLICATION_LOG":
+		return cmdReplicationLog()
+	case "PSYNC":
+		return cmdPSync(args...)
 	}
 
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
@@ -379,6 +396,7 @@ func NewClientState() *ClientState {
 		maxKeys:   0,
 		version:   make(map[string]int),
 		watched:   make(map[string]int),
+		role:      "master",
 	}
 }
 
@@ -564,6 +582,36 @@ func (s *Set) Values() []string {
 	return out
 }
 
+func cmdPSync(args ...string) string {
+	out := ""
+	if args[0] == "?" && args[1] == "1" {
+		// full resync
+		out += fmt.Sprintf("+FULLRESYNC %s 0\r\n", REPLID)
+		out += fmt.Sprintf("$%d\r\n", len(backlog))
+		out += encodeBulkList(backlog)
+		return out
+	}
+
+	return "+CONTINUE\r\n"
+}
+
+func cmdReplicationLog() string {
+	return encodeBulkList(backlog) + encodeSimpleString("OK")
+}
+
+func cmdRole(client *ClientState) string {
+	return encodeBulkString(client.role)
+}
+
+func cmdReplicaOf(client *ClientState, args ...string) string {
+	if strings.ToUpper(args[0]) == "NO" && strings.ToUpper(args[1]) == "ONE" {
+		client.role = "master"
+	} else {
+		client.role = "replica"
+	}
+	return encodeSimpleString("OK")
+}
+
 func cmdEval(client *ClientState, script string, nKey string, args ...string) string {
 	if strings.HasPrefix(script, "return '") && strings.HasSuffix(script, "'") {
 		out := script[len("return '") : len(script)-1]
@@ -625,12 +673,7 @@ func cmdAof(client *ClientState, command string) string {
 
 	switch command {
 	case "DUMP":
-		out := ""
-		for _, line := range client.aofLog {
-			out += "$" + strconv.Itoa(len(line)) + "\r\n"
-			out += line + "\r\n"
-		}
-		return out + "+OK\r\n"
+		return encodeBulkList(client.aofLog) + encodeSimpleString("OK")
 	case "REPLAY":
 		for _, line := range client.aofLog {
 			args := parseArgs(line)
@@ -1423,6 +1466,14 @@ func clampRange(start string, stop string, ln int) (int, int, string) {
 	return s1, s2, ""
 }
 
+func encodeBulkList(items []string) string {
+	out := ""
+	for _, v := range items {
+		out += encodeBulkString(v)
+	}
+	return out
+}
+
 func encodeArray(items []string) string {
 	r := fmt.Sprintf("*%d\r\n", len(items))
 	for _, v := range items {
@@ -1485,52 +1536,12 @@ func main() {
 			continue
 		}
 		args := parseArgs(line)
-		fmt.Print(client.Dispatch(args[0], args[1:]...))
+
+		out := fmt.Sprintf(client.Dispatch(args[0], args[1:]...))
+		fmt.Print(out)
+
+		if contains(WRITE_COMMANDS, args[0]) && !strings.Contains(out, "-") {
+			backlog = append(backlog, strings.Join(args, " "))
+		}
 	}
 }
-
-// func main() {
-// 	r := bufio.NewReader(os.Stdin)
-// 	w := bufio.NewWriter(os.Stdout)
-// 	defer w.Flush()
-// 	for {
-// 		args, err := parseRequest(r)
-// 		if err != nil {
-// 			return
-// 		}
-// 		w.WriteString(handleCommand(args))
-// 		w.Flush()
-// 	}
-// }
-//
-// func readCount(r *bufio.Reader, prefix byte) (int, error) {
-// 	line, err := r.ReadString('\n')
-// 	if err != nil {
-// 		return 0, err
-// 	}
-// 	if len(line) == 0 || line[0] != prefix {
-// 		return 0, fmt.Errorf("expected %q, got %q", prefix, line)
-// 	}
-// 	return strconv.Atoi(strings.TrimRight(line[1:], "\r\n"))
-// }
-//
-// func parseRequest(r *bufio.Reader) ([]string, error) {
-// 	n, err := readCount(r, '*')
-// 	if err != nil {
-// 		return nil, err
-// 	}
-//
-// 	args := make([]string, n)
-// 	for i := range args {
-// 		length, err := readCount(r, '$')
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		buf := make([]byte, length+2)
-// 		if _, err := io.ReadFull(r, buf); err != nil {
-// 			return nil, err
-// 		}
-// 		args[i] = string(buf[:length])
-// 	}
-// 	return args, nil
-// }
