@@ -76,6 +76,9 @@ var ARITIES = map[string]Arity{
 	"ROLE":            {0, 0},
 	"REPLICATION_LOG": {0, 0},
 	"PSYNC":           {2, 2},
+	"XADD":            {3, 128},
+	"XLEN":            {1, 1},
+	"XRANGE":          {3, 3},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -285,6 +288,12 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return cmdReplicationLog()
 	case "PSYNC":
 		return cmdPSync(args...)
+	case "XADD":
+		return cmdXAdd(args[0], args[1], args[2:]...)
+	case "XLEN":
+		return cmdXLen(args[0])
+	case "XRANGE":
+		return cmdXRange(args[0], args[1], args[2])
 	}
 
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
@@ -719,7 +728,11 @@ func cmdSave() string {
 		}
 	}
 
-	return strings.Join(lines, "\r\n") + "\r\n+OK\r\n"
+	out := ""
+	for _, l := range lines {
+		out += l + "\r\n"
+	}
+	return out + encodeSimpleString("OK")
 }
 
 func cmdRestore(data string) string {
@@ -1416,6 +1429,82 @@ func cmdPush(sign string, key string, args ...string) string {
 	return encodeInteger(list.Len())
 }
 
+type StreamEntry struct {
+	id     string
+	fields []string
+}
+
+var streams = map[string][]StreamEntry{}
+
+func streamIDLess(a, b string) bool {
+	am, as := splitStreamID(a)
+	bm, bs := splitStreamID(b)
+	if am != bm {
+		return am < bm
+	}
+	return as < bs
+}
+
+func splitStreamID(id string) (int, int) {
+	parts := strings.SplitN(id, "-", 2)
+	ms, _ := strconv.Atoi(parts[0])
+	seq := 0
+	if len(parts) > 1 {
+		seq, _ = strconv.Atoi(parts[1])
+	}
+	return ms, seq
+}
+
+func cmdXAdd(key, id string, fields ...string) string {
+	if len(fields) == 0 || len(fields)%2 != 0 {
+		return encodeError("ERR wrong number of arguments for 'xadd' command")
+	}
+
+	if err := isWrongType(key, "stream"); err != "" {
+		return err
+	}
+
+	entries := streams[key]
+	if id == "*" {
+		id = fmt.Sprintf("%d-0", len(entries)+1)
+	} else if len(entries) > 0 && !streamIDLess(entries[len(entries)-1].id, id) {
+		return encodeError("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+	}
+
+	streams[key] = append(entries, StreamEntry{id: id, fields: fields})
+	keyTypes[key] = "stream"
+
+	return encodeBulkString(id)
+}
+
+func cmdXLen(key string) string {
+	if err := isWrongType(key, "stream"); err != "" {
+		return err
+	}
+	return encodeInteger(len(streams[key]))
+}
+
+func cmdXRange(key, start, stop string) string {
+	if err := isWrongType(key, "stream"); err != "" {
+		return err
+	}
+
+	out := []string{}
+	for _, e := range streams[key] {
+		if start != "-" && streamIDLess(e.id, start) {
+			continue
+		}
+		if stop != "+" && streamIDLess(stop, e.id) {
+			continue
+		}
+		out = append(out, encodeRawArray([]string{
+			encodeBulkString(e.id),
+			encodeArray(e.fields),
+		}))
+	}
+	return encodeRawArray(out)
+}
+
 func isWrongType(key, want string) string {
 	if t, ok := keyTypes[key]; ok && t != want {
 		return encodeError("WRONGTYPE Operation against a key holding the wrong kind of value")
@@ -1472,6 +1561,14 @@ func encodeBulkList(items []string) string {
 		out += encodeBulkString(v)
 	}
 	return out
+}
+
+func encodeRawArray(parts []string) string {
+	r := fmt.Sprintf("*%d\r\n", len(parts))
+	for _, p := range parts {
+		r += p
+	}
+	return r
 }
 
 func encodeArray(items []string) string {
@@ -1537,7 +1634,7 @@ func main() {
 		}
 		args := parseArgs(line)
 
-		out := fmt.Sprintf(client.Dispatch(args[0], args[1:]...))
+		out := client.Dispatch(args[0], args[1:]...)
 		fmt.Print(out)
 
 		if contains(WRITE_COMMANDS, args[0]) && !strings.Contains(out, "-") {
