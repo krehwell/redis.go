@@ -588,9 +588,9 @@ func cmdEval(client *ClientState, script string, nKey string, args ...string) st
 	case "return tonumber(redis.call('GET', KEYS[1])) or 0":
 		return client.Dispatch("GET", keys[0])
 	case "return #KEYS":
-		return strconv.Itoa(len(keys))
+		return encodeInteger(len(keys))
 	case "return ARGV[1]":
-		return strconv.Itoa(len(argv))
+		return encodeBulkString(argv[0])
 	}
 	return ""
 }

@@ -42,14 +42,6 @@ To see a single test next to what it should be:
 go run main.go < tests/13-lpush-rpush/1.in | diff - tests/13-lpush-rpush/1.out
 ```
 
-When the output looks identical but the test still fails, it is line endings. RESP wants `\r\n` everywhere:
-
-```sh
-go run main.go < tests/13-lpush-rpush/1.in | xxd | tail
-```
-
-`0d 0a` is right, a bare `0a` is not.
-
 ## What works
 
 Lessons 1 to 26. Strings, lists, hashes, sets, sorted sets, expiry, transactions, pub/sub, persistence, eviction.
@@ -72,8 +64,8 @@ Still to do: `EVAL` (Lua), replication, streams.
 
 ## Notes
 
-**Everything lives in `main.go`.** The grader compiles that one file and nothing else, so splitting into packages breaks it. See `entrypoint` in `.shipthatcode.json`.
+**Everything goes in `main.go`.** The grader compiles that one file, nothing else. Splitting into packages breaks it.
 
-**Lesson 5 fails on purpose.** It feeds RESP arrays (`*2\r\n$3\r\nGET\r\n...`) while lessons 6 onward feed plain lines (`GET foo`). One parser cannot do both. The course says each lesson is its own exercise; the lesson 5 parser is in git history at `d0d2585`.
+**Lesson 5 fails on purpose.** It sends RESP arrays, lessons 6 onward send plain lines. One parser cannot read both. The old parser is at commit `d0d2585`.
 
-**`WAIT` is not a real Redis command here.** It moves a fake clock forward so expiry can be tested without the suite sleeping for 6 seconds. Everything that reads the time goes through `now()`, which is `time.Now()` plus that offset.
+**`WAIT` is fake.** It moves a pretend clock forward so expiry tests do not have to sleep. Anything reading the time calls `now()`.
