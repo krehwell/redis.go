@@ -71,6 +71,7 @@ var ARITIES = map[string]Arity{
 	"INFO":        {1, 1},
 	"WATCH":       {1, 128},
 	"UNWATCH":     {0, 0},
+	"EVAL":        {2, 128},
 }
 
 var clock int64 = 0 // simulated clock in milliseconds
@@ -265,6 +266,8 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		return cmdMaxKeys(c, args[0])
 	case "INFO":
 		return cmdInfo(c, args...)
+	case "EVAL":
+		return cmdEval(c, args[0], args[1], args[2:]...)
 	}
 
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
@@ -559,6 +562,37 @@ func (s *Set) Values() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func cmdEval(client *ClientState, script string, nKey string, args ...string) string {
+	if strings.HasPrefix(script, "return '") && strings.HasSuffix(script, "'") {
+		out := script[len("return '") : len(script)-1]
+		return encodeSimpleString(out)
+	}
+
+	numOfKeys, err := strconv.Atoi(nKey)
+	if err != nil {
+		return encodeError("ERR value is not an integer or out of range")
+	}
+
+	keys := args[0:numOfKeys]
+	argv := args[numOfKeys:]
+
+	switch script {
+	case "return redis.call('GET', KEYS[1])":
+		return client.Dispatch("GET", keys[0])
+	case "return redis.call('SET', KEYS[1], ARGV[1])":
+		return client.Dispatch("SET", keys[0], argv[0])
+	case "return redis.call('INCR', KEYS[1])":
+		return client.Dispatch("INCR", keys[0])
+	case "return tonumber(redis.call('GET', KEYS[1])) or 0":
+		return client.Dispatch("GET", keys[0])
+	case "return #KEYS":
+		return strconv.Itoa(len(keys))
+	case "return ARGV[1]":
+		return strconv.Itoa(len(argv))
+	}
+	return ""
 }
 
 func cmdMaxKeys(client *ClientState, max string) string {
