@@ -250,15 +250,15 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 		clock += ms
 		return encodeSimpleString("OK")
 	case "MULTI":
-		return c.Multi()
+		return cmdMulti(c)
 	case "DISCARD":
-		return c.Discard()
+		return cmdDiscard(c)
 	case "EXEC":
-		return c.Exec()
+		return cmdExec(c)
 	case "WATCH":
-		return c.Watch(args...)
+		return cmdWatch(c, args...)
 	case "UNWATCH":
-		return c.UnWatch()
+		return cmdUnWatch(c)
 	case "SUBSCRIBE":
 		return cmdSubscribe(args...)
 	case "PUBLISH":
@@ -290,65 +290,65 @@ func (c *ClientState) Dispatch(cmd string, args ...string) string {
 	return encodeError(fmt.Sprintf("ERR unknown command: %s", cmd))
 }
 
-func (c *ClientState) Multi() string {
-	if c.isInMulti {
-		return encodeError("ERR MULTI calls can not be nested")
-	}
-	c.isInMulti = true
-	c.queued = []QueuedCmd{}
-	return encodeSimpleString("OK")
-}
-
 func (c *ClientState) Bump(key string) {
 	c.version[key] += 1
 }
 
-func (c *ClientState) Watch(keys ...string) string {
-	if c.isInMulti {
+func cmdWatch(client *ClientState, keys ...string) string {
+	if client.isInMulti {
 		return encodeNil()
 	}
 
 	for _, k := range keys {
-		c.watched[k] = c.version[k]
+		client.watched[k] = client.version[k]
 	}
 
 	return encodeSimpleString("OK")
 }
 
-func (c *ClientState) UnWatch() string {
-	for k := range c.version {
-		delete(c.version, k)
-		delete(c.watched, k)
+func cmdUnWatch(client *ClientState) string {
+	for k := range client.version {
+		delete(client.version, k)
+		delete(client.watched, k)
 	}
 	return encodeSimpleString("OK")
 }
 
-func (c *ClientState) Exec() string {
-	if !c.isInMulti {
+func cmdMulti(client *ClientState) string {
+	if client.isInMulti {
+		return encodeError("ERR MULTI calls can not be nested")
+	}
+	client.isInMulti = true
+	client.queued = []QueuedCmd{}
+	return encodeSimpleString("OK")
+}
+
+func cmdExec(client *ClientState) string {
+	if !client.isInMulti {
 		return encodeError("ERR EXEC without MULTI")
 	}
 
-	for k := range c.watched {
-		if c.watched[k] != c.version[k] {
+	for k := range client.watched {
+		if client.watched[k] != client.version[k] {
 			return encodeNil()
 		}
 	}
 
-	c.isInMulti = false
-	queue := c.queued
-	c.queued = nil
+	client.isInMulti = false
+	queue := client.queued
+	client.queued = nil
 	out := fmt.Sprintf("*%d\r\n", len(queue))
 	for _, q := range queue {
 		cmd, args := q.cmd, q.args
-		out += c.Dispatch(cmd, args...)
+		out += client.Dispatch(cmd, args...)
 	}
-	c.UnWatch()
+	cmdUnWatch(client)
 	return out
 }
 
-func (c *ClientState) Discard() string {
-	c.isInMulti = false
-	c.queued = []QueuedCmd{}
+func cmdDiscard(client *ClientState) string {
+	client.isInMulti = false
+	client.queued = []QueuedCmd{}
 	return encodeSimpleString("OK")
 }
 
