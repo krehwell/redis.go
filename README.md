@@ -1,61 +1,79 @@
-# Build Redis from Scratch
+# redis-go
+
+A Redis server written from scratch in Go, one lesson at a time.
+
+It reads commands from stdin and writes RESP replies to stdout. No networking, no dependencies, just the standard library.
+
+Built by following [Build Redis from Scratch](https://shipthatcode.com/courses/build-redis) on shipthatcode.
 
 [![shipthatcode — Build Redis from Scratch](https://api.shipthatcode.com/cert/cbbcdb1adb9520c7966f3fd5cae2eba2.svg)](https://shipthatcode.com/courses/build-redis)
 
-My working repo for [Build Redis from Scratch](https://shipthatcode.com/courses/build-redis) on [shipthatcode.com](https://shipthatcode.com) — built lesson by lesson in my own editor.
+## Run it
 
-## What you need
+```sh
+go run main.go
+```
 
-- **git** and a terminal (macOS/Linux: the built-in one; Windows: see below)
-- Go 1.21+ (`go version` should work)
-- any editor you like — VS Code, Vim, JetBrains, anything
+Then type commands:
 
-### On Windows
+```
+SET name alice
+GET name
+LPUSH mylist a b c
+LRANGE mylist 0 -1
+```
 
-Use **WSL** if you can: run `wsl --install` in an admin PowerShell once, then do everything (git, editing, `./run_tests.sh`) inside the Ubuntu terminal — it behaves exactly like the grader.
+Or feed it a test file:
 
-[Git Bash](https://git-scm.com/downloads) (installs with git) also runs `./run_tests.sh`. One caveat: native Windows compilers and runtimes write Windows line endings (`\r\n`), so on byte-exact tests you can see local FAILs where the diff looks identical — your logic is fine, the invisible line endings differ. If that happens, trust **Check my solution** on the lesson page (graded on Linux), or switch to WSL.
+```sh
+go run main.go < tests/13-lpush-rpush/1.in
+```
 
-## Getting started (one-time setup)
+## Test
 
-1. Unzip this download and open the folder in your editor.
-2. Create a new **empty, public** repo at [github.com/new](https://github.com/new) — leave "Add a README" and ".gitignore" **unchecked** (this folder already has both).
-3. In your terminal, inside the unzipped folder, push it to GitHub:
+```sh
+./run_tests.sh 13     # one lesson
+./run_tests.sh        # everything
+```
 
-   ```sh
-   git init
-   git add .
-   git commit -m "start Build Redis from Scratch"
-   git branch -M main
-   git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPO.git
-   git push -u origin main
-   ```
+To see a single test next to what it should be:
 
-4. Paste your repo link on the [course page](https://shipthatcode.com/courses/build-redis) ("Work in your own editor" → **Link repo**). Done — you never do this again.
+```sh
+go run main.go < tests/13-lpush-rpush/1.in | diff - tests/13-lpush-rpush/1.out
+```
 
-## The lesson loop
+When the output looks identical but the test still fails, it is line endings. RESP wants `\r\n` everywhere:
 
-1. Read the lesson on shipthatcode, write your code in `main.go` here.
-2. Test locally against **the lesson you're on**: `./run_tests.sh 01`, `./run_tests.sh 02`, and so on. On Windows, run this inside Git Bash. (A bare `./run_tests.sh` runs every lesson's tests, which is only useful on courses where one program answers all of them — see below.)
-3. When it passes: `git add -A && git commit -m "lesson 01" && git push`
-4. Hit **Check my solution** on the lesson page — shipthatcode pulls this repo and grades it against the full suite, including hidden tests.
+```sh
+go run main.go < tests/13-lpush-rpush/1.in | xxd | tail
+```
 
-## How this repo is laid out
+`0d 0a` is right, a bare `0a` is not.
 
-- `main.go` — the program you're grading right now.
-- `tests/` — the public test cases per lesson (`tests/01-…/1.in` → expected `1.out`).
-- `run_tests.sh` — the local runner. `.shipthatcode.json` tells the grader what this repo is; don't delete either.
+## What works
 
-### One lesson at a time
+Lessons 1 to 26. Strings, lists, hashes, sets, sorted sets, expiry, transactions, pub/sub, persistence, eviction.
 
-Each lesson states its own input and output format, and **most lessons are a separate exercise rather than a bigger version of the last one**. Two lessons can be handed the same input line and correctly want different output — a tokenizer prints `[ls] [-la]`, while the next lesson, which receives already-tokenized input, prints `ls -la`. No single program can satisfy both, and it isn't supposed to.
+```
+PING ECHO COMMAND
+SET GET DEL EXISTS KEYS TYPE RENAME DBSIZE
+INCR DECR INCRBY DECRBY
+EXPIRE TTL PTTL PERSIST
+LPUSH RPUSH LPOP RPOP LLEN LRANGE
+HSET HGET HGETALL HEXISTS HDEL HLEN
+SADD SCARD SISMEMBER SREM
+ZADD ZRANGE ZSCORE ZCARD ZRANK
+MULTI EXEC DISCARD WATCH UNWATCH
+SUBSCRIBE UNSUBSCRIBE PUBLISH
+SAVE RESTORE AOF MAXKEYS INFO
+```
 
-So treat `main.go` as the file for the lesson you're grading: when you move on, change what it does. Nothing is lost — every earlier lesson is in your git history (`git log`, `git show`), and shipthatcode remembers each lesson you passed, so a lesson stays completed even after you replace the code that passed it. If you'd rather keep the code visible, copy it aside first (`cp main.go solutions/01-<lesson>.go`) — extra files are ignored by the grader.
+Still to do: `EVAL` (Lua), replication, streams.
 
-When a lesson genuinely does build on the previous one, its own text says so and its tests will pass with the earlier behaviour still in place.
+## Notes
 
-## If the course gets updated
+**Everything lives in `main.go`.** The grader compiles that one file and nothing else, so splitting into packages breaks it. See `entrypoint` in `.shipthatcode.json`.
 
-Courses improve over time — exercises get added, tests get fixed. If the [course page](https://shipthatcode.com/courses/build-redis) says your starter is out of date: download a fresh zip, **delete this repo's `tests/` folder entirely**, copy in the fresh `tests/` and `.shipthatcode.json`, and keep your own code exactly as it is. (Don't merge test folders — lesson numbering can shift between versions.) Lessons you've already completed stay completed either way.
+**Lesson 5 fails on purpose.** It feeds RESP arrays (`*2\r\n$3\r\nGET\r\n...`) while lessons 6 onward feed plain lines (`GET foo`). One parser cannot do both. The course says each lesson is its own exercise; the lesson 5 parser is in git history at `d0d2585`.
 
-<sub>Repo topic suggestion: `shipthatcode` · Starter generated by [shipthatcode.com](https://shipthatcode.com)</sub>
+**`WAIT` is not a real Redis command here.** It moves a fake clock forward so expiry can be tested without the suite sleeping for 6 seconds. Everything that reads the time goes through `now()`, which is `time.Now()` plus that offset.
