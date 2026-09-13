@@ -42,9 +42,9 @@ To see a single test next to what it should be:
 go run main.go < tests/13-lpush-rpush/1.in | diff - tests/13-lpush-rpush/1.out
 ```
 
-## What works
+## Commands
 
-Lessons 1 to 26. Strings, lists, hashes, sets, sorted sets, expiry, transactions, pub/sub, persistence, eviction.
+Strings, lists, hashes, sets, sorted sets, key expiry, transactions, pub/sub, persistence, and eviction.
 
 ```
 PING ECHO COMMAND
@@ -57,10 +57,10 @@ SADD SCARD SISMEMBER SREM
 ZADD ZRANGE ZSCORE ZCARD ZRANK
 MULTI EXEC DISCARD WATCH UNWATCH
 SUBSCRIBE UNSUBSCRIBE PUBLISH
-SAVE RESTORE AOF MAXKEYS INFO
+SAVE RESTORE AOF MAXKEYS INFO EVAL
 ```
 
-Still to do: `EVAL` (Lua), replication, streams.
+Lists are a hand-written doubly-linked list. Sorted sets keep scores in a map and sort on read, ties broken by member name. Expiry is passive, keys are dropped when something touches them.
 
 ## Notes
 
